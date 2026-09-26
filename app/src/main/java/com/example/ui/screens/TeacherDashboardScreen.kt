@@ -9,41 +9,24 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Campaign
-import androidx.compose.material.icons.filled.Class
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.ExitToApp
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,7 +35,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -60,17 +42,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Assignment
 import com.example.data.model.Notice
+import com.example.data.model.NoticeAudience
 import com.example.data.model.SchoolClass
-import com.example.data.model.Student
 import com.example.data.model.Teacher
 import com.example.data.model.User
+import com.example.data.model.UserRole
+import com.example.data.repository.Remote
+import com.example.domain.SchoolAccess
+import com.example.ui.components.ConfirmDeleteDialog
+import com.example.ui.components.EmptyState
+import com.example.ui.components.ErrorState
+import com.example.ui.components.InfoCard
+import com.example.ui.components.LoadingState
+import com.example.ui.components.Pill
+import com.example.ui.components.PortalHeader
+import com.example.ui.components.PortalTabs
+import com.example.ui.components.ProfileCard
+import com.example.ui.components.RemoteContent
+import com.example.ui.components.SectionTitle
+import com.example.ui.components.StatusBanner
 import com.example.ui.theme.DiscoveryGold
 import com.example.ui.theme.DiscoveryGreen
-import com.example.ui.theme.DiscoveryGreenDark
 import com.example.ui.theme.SchoolSlate
 import com.example.ui.viewmodel.SchoolAuthViewModel
+import com.example.ui.viewmodel.SchoolState
 import com.example.ui.viewmodel.TeacherTab
-import com.google.firebase.Timestamp
 
 @Composable
 fun TeacherDashboardScreen(
@@ -80,272 +76,102 @@ fun TeacherDashboardScreen(
 ) {
     val currentTab by viewModel.teacherTab.collectAsState()
     val statusMsg by viewModel.statusMessage.collectAsState()
+    val state by viewModel.school.collectAsState()
 
-    val teacherProfile = viewModel.getTeacherProfile(user)
-    val teacherClasses = viewModel.getTeacherClasses(user)
-    val teacherStudents = viewModel.getTeacherStudents(user)
-    val teacherAssignments = viewModel.getTeacherAssignments(user)
-    val teacherNotices = viewModel.getTeacherNotices(user)
+    val profile = state.teacherProfile.items.firstOrNull()
+    val myClasses = SchoolAccess.teacherClasses(profile, state.classes.items)
+    val classIds = myClasses.map { it.id }.toSet()
 
-    var showCreateAssignmentDialog by remember { mutableStateOf(false) }
-    var showCreateClassNoticeDialog by remember { mutableStateOf(false) }
+    Column(modifier = modifier.fillMaxSize().background(Color(0xFFF8F9FA))) {
+        PortalHeader(
+            title = "Teacher Portal",
+            badge = "TEACHER",
+            badgeColor = DiscoveryGreen,
+            subtitle = listOf(user.label, myClasses.joinToString { it.name }).filter { it.isNotBlank() }.joinToString(" • "),
+            icon = Icons.Default.School,
+            onSignOut = { viewModel.signOut() }
+        )
+        StatusBanner(statusMsg) { viewModel.clearStatusMessage() }
+        PortalTabs(TeacherTab.entries, currentTab, { it.title }) { viewModel.setTeacherTab(it) }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFFF8F9FA))
-    ) {
-        // Teacher Header
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(DiscoveryGreenDark)
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(DiscoveryGold.copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.School,
-                            contentDescription = null,
-                            tint = DiscoveryGold,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = "Teacher Portal",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .background(DiscoveryGreen, RoundedCornerShape(4.dp))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = "TEACHER",
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                        Text(
-                            text = "${teacherProfile.name} • ${teacherClasses.firstOrNull()?.name ?: "Grade 4A"}",
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.85f)
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = { viewModel.signOut() },
-                    modifier = Modifier.testTag("teacher_sign_out_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ExitToApp,
-                        contentDescription = "Sign Out",
-                        tint = Color.White
-                    )
-                }
-            }
-        }
-
-        // Status Notification Banner
-        if (statusMsg != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFE8F5E9))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = statusMsg ?: "",
-                    color = Color(0xFF2E7D32),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                IconButton(
-                    onClick = { viewModel.clearStatusMessage() },
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color(0xFF2E7D32), modifier = Modifier.size(16.dp))
-                }
-            }
-        }
-
-        // Teacher Navigation Tabs
-        ScrollableTabRow(
-            selectedTabIndex = currentTab.ordinal,
-            containerColor = Color.White,
-            contentColor = DiscoveryGreen,
-            edgePadding = 8.dp
-        ) {
-            TeacherTab.values().forEach { tab ->
-                Tab(
-                    selected = currentTab == tab,
-                    onClick = { viewModel.setTeacherTab(tab) },
-                    text = {
-                        Text(
-                            text = tab.title,
-                            fontWeight = if (currentTab == tab) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
-                        )
-                    },
-                    modifier = Modifier.testTag("teacher_tab_${tab.name.lowercase()}")
-                )
-            }
-        }
-
-        // Tab Content
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .weight(1f)
-        ) {
-            when (currentTab) {
-                TeacherTab.MY_CLASSES -> TeacherClassesTab(
-                    assignedClasses = teacherClasses,
-                    students = teacherStudents
-                )
-                TeacherTab.MY_STUDENTS -> TeacherStudentsTab(
-                    students = teacherStudents
-                )
-                TeacherTab.ASSIGNMENTS -> TeacherAssignmentsTab(
-                    assignments = teacherAssignments,
-                    assignedClasses = teacherClasses,
-                    onCreateClick = { showCreateAssignmentDialog = true },
-                    onDeleteClick = { viewModel.deleteAssignment(it) }
-                )
-                TeacherTab.NOTICES -> TeacherNoticesTab(
-                    notices = teacherNotices,
-                    assignedClasses = teacherClasses,
-                    onCreateNoticeClick = { showCreateClassNoticeDialog = true }
-                )
-                TeacherTab.PROFILE -> TeacherProfileTab(
-                    user = user,
-                    teacher = teacherProfile,
-                    assignedClasses = teacherClasses,
+        Box(modifier = Modifier.fillMaxSize().weight(1f)) {
+            if (currentTab == TeacherTab.PROFILE) {
+                val saving by viewModel.saving.collectAsState()
+                val error by viewModel.formError.collectAsState()
+                ProfileCard(
+                    name = user.displayName,
+                    email = user.email,
+                    phone = user.phoneNumber,
+                    roleLabel = "TEACHER",
+                    accent = DiscoveryGreen,
+                    saving = saving,
+                    error = error,
+                    details = listOf(
+                        "Employee number" to profile?.employeeNumber.orEmpty(),
+                        "Classes" to myClasses.joinToString { it.name },
+                        "Subjects" to state.subjects.items.filter { it.id in profile?.subjectIds.orEmpty() }.joinToString { it.name }
+                    ),
+                    onSave = { name, phone, done -> viewModel.updateOwnProfile(name, phone, done) },
+                    onResetPassword = { viewModel.sendMyPasswordReset() },
                     onSignOut = { viewModel.signOut() }
                 )
+            } else {
+                TeacherProfileGate(state.teacherProfile) {
+                    when (currentTab) {
+                        TeacherTab.MY_CLASSES -> TeacherClassesTab(state, profile!!, myClasses)
+                        TeacherTab.MY_STUDENTS -> TeacherStudentsTab(state, myClasses)
+                        TeacherTab.ASSIGNMENTS -> TeacherAssignmentsTab(state, user, myClasses, classIds, viewModel)
+                        TeacherTab.NOTICES -> TeacherNoticesTab(state, user, myClasses, classIds, viewModel)
+                        TeacherTab.PROFILE -> Unit
+                    }
+                }
             }
         }
-    }
-
-    if (showCreateAssignmentDialog) {
-        TeacherCreateAssignmentDialog(
-            teacher = teacherProfile,
-            assignedClasses = teacherClasses,
-            onDismiss = { showCreateAssignmentDialog = false },
-            onSave = { assignment ->
-                viewModel.saveAssignment(assignment)
-                showCreateAssignmentDialog = false
-            }
-        )
-    }
-
-    if (showCreateClassNoticeDialog) {
-        TeacherCreateNoticeDialog(
-            teacher = teacherProfile,
-            assignedClasses = teacherClasses,
-            onDismiss = { showCreateClassNoticeDialog = false },
-            onSave = { notice ->
-                viewModel.saveNotice(notice)
-                showCreateClassNoticeDialog = false
-            }
-        )
     }
 }
 
-// My Classes Tab
+/** Shows why nothing can be displayed when the admin has not created a teacher record yet. */
 @Composable
-fun TeacherClassesTab(
-    assignedClasses: List<SchoolClass>,
-    students: List<Student>
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("My Assigned Classes (${assignedClasses.size})", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
+private fun TeacherProfileGate(profile: Remote<Teacher>, content: @Composable () -> Unit) {
+    when {
+        profile.error != null -> Column(Modifier.padding(16.dp)) { ErrorState(profile.error) }
+        profile.loading -> LoadingState()
+        profile.items.isEmpty() -> EmptyState(
+            "Your login is not linked to a teacher record yet. Ask the school administrator to add you under Teachers.",
+            Modifier.padding(16.dp)
+        )
+        else -> content()
+    }
+}
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(assignedClasses) { cls ->
-                val classStudents = students.filter { it.classId == cls.id }
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    shape = RoundedCornerShape(12.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(DiscoveryGreen),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Class, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
-                                }
-                                Column {
-                                    Text(cls.name, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFF1E293B))
-                                    Text("Grade: ${cls.grade} • Discovery Primary", fontSize = 11.sp, color = SchoolSlate)
-                                }
+@Composable
+private fun TeacherClassesTab(state: SchoolState, teacher: Teacher, myClasses: List<SchoolClass>) {
+    val subjectsById = state.subjects.items.associateBy { it.id }
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionTitle("My Assigned Classes (${myClasses.size})")
+        state.students.error?.let { ErrorState(it) }
+        if (myClasses.isEmpty()) {
+            EmptyState("No classes are assigned to you yet. The administrator assigns classes under Teachers or Classes.")
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(myClasses, key = { it.id }) { cls ->
+                    val classStudents = state.students.items.filter { it.classId == cls.id }.sortedBy { it.fullName }
+                    InfoCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(cls.name, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.testTag("teacher_class_name"))
+                                Text(cls.grade, fontSize = 11.sp, color = SchoolSlate)
                             }
-
-                            Box(
-                                modifier = Modifier
-                                    .background(DiscoveryGold.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                            ) {
-                                Text("${classStudents.size} Students", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFFB45309))
-                            }
+                            Pill("${classStudents.size} learners", Color(0xFFB45309))
                         }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Divider(color = Color(0xFFF1F5F9))
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text("Enrolled Roster Preview:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = SchoolSlate)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        classStudents.take(4).forEach { student ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
+                        val subjectNames = cls.subjectIds.mapNotNull { subjectsById[it]?.name }
+                        Text("Subjects: ${subjectNames.joinToString().ifBlank { "none" }}", fontSize = 11.sp, color = Color(0xFF7C3AED))
+                        val mySubjects = teacher.subjectIds.mapNotNull { subjectsById[it]?.name }
+                        if (mySubjects.isNotEmpty()) Text("You teach: ${mySubjects.joinToString()}", fontSize = 11.sp, color = DiscoveryGreen)
+                        HorizontalDivider(color = Color(0xFFF1F5F9))
+                        if (classStudents.isEmpty()) Text("No learners enrolled.", fontSize = 11.sp, color = SchoolSlate)
+                        classStudents.forEach { student ->
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("• ${student.fullName}", fontSize = 12.sp, color = Color(0xFF334155))
                                 Text(student.studentNumber, fontSize = 11.sp, color = SchoolSlate)
                             }
@@ -357,80 +183,40 @@ fun TeacherClassesTab(
     }
 }
 
-// My Students Tab
 @Composable
-fun TeacherStudentsTab(
-    students: List<Student>
-) {
-    var searchQuery by remember { mutableStateOf("") }
-    val filtered = students.filter {
-        it.fullName.contains(searchQuery, ignoreCase = true) ||
-                it.studentNumber.contains(searchQuery, ignoreCase = true)
-    }
+private fun TeacherStudentsTab(state: SchoolState, myClasses: List<SchoolClass>) {
+    var search by remember { mutableStateOf("") }
+    val classesById = myClasses.associateBy { it.id }
+    val filtered = state.students.items.filter {
+        search.isBlank() || it.fullName.contains(search, ignoreCase = true) || it.studentNumber.contains(search, ignoreCase = true)
+    }.sortedBy { it.fullName }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("Learners in My Classes (${students.size})", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
-
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionTitle("Learners in My Classes (${state.students.items.size})")
         OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = { Text("Search by student name or admission #...") },
+            value = search,
+            onValueChange = { search = it },
+            placeholder = { Text("Search by learner name or admission #…") },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = SchoolSlate) },
-            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("teacher_student_search"),
             shape = RoundedCornerShape(10.dp)
         )
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(filtered) { student ->
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(CircleShape)
-                                        .background(DiscoveryGreen.copy(alpha = 0.1f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Person, contentDescription = null, tint = DiscoveryGreen, modifier = Modifier.size(20.dp))
-                                }
-                                Column {
-                                    Text(student.fullName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text("No: ${student.studentNumber}", fontSize = 11.sp, color = SchoolSlate)
-                                }
+        RemoteContent(state.students, if (search.isBlank()) "No learners in your classes yet." else "No learners match.", filtered) { list ->
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(list, key = { it.uid }) { student ->
+                    InfoCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(student.fullName, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.testTag("teacher_student_name"))
+                                Text("No: ${student.studentNumber.ifBlank { "—" }}", fontSize = 11.sp, color = SchoolSlate)
                             }
-
-                            Box(
-                                modifier = Modifier
-                                    .background(Color(0xFFE8F5E9), RoundedCornerShape(4.dp))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text("ACTIVE", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = DiscoveryGreen)
-                            }
+                            Pill(classesById[student.classId]?.name ?: "", DiscoveryGreen)
                         }
-
                         if (student.phoneNumber.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(6.dp))
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(13.dp), tint = SchoolSlate)
-                                Text("Contact: ${student.phoneNumber}", fontSize = 11.sp, color = Color(0xFF475569))
+                                Text(student.phoneNumber, fontSize = 11.sp, color = Color(0xFF475569))
                             }
                         }
                     }
@@ -440,28 +226,28 @@ fun TeacherStudentsTab(
     }
 }
 
-// Assignments Tab
 @Composable
-fun TeacherAssignmentsTab(
-    assignments: List<Assignment>,
-    assignedClasses: List<SchoolClass>,
-    onCreateClick: () -> Unit,
-    onDeleteClick: (String) -> Unit
+private fun TeacherAssignmentsTab(
+    state: SchoolState,
+    user: User,
+    myClasses: List<SchoolClass>,
+    classIds: Set<String>,
+    viewModel: SchoolAuthViewModel
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Class Assignments (${assignments.size})", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
+    var creating by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Assignment?>(null) }
+    var deleting by remember { mutableStateOf<Assignment?>(null) }
+    val assignments = SchoolAccess.assignmentsForClasses(state.assignments.items, classIds)
+    val classesById = state.classes.items.associateBy { it.id }
+    val subjectsById = state.subjects.items.associateBy { it.id }
+    val teachersById = state.teachers.items.associateBy { it.uid }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("Class Assignments (${assignments.size})", Modifier.weight(1f))
             Button(
-                onClick = onCreateClick,
+                onClick = { viewModel.clearFormError(); creating = true },
+                enabled = myClasses.isNotEmpty(),
                 colors = ButtonDefaults.buttonColors(containerColor = DiscoveryGreen),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(8.dp),
@@ -472,57 +258,47 @@ fun TeacherAssignmentsTab(
                 Text("New Task", fontSize = 12.sp)
             }
         }
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(assignments) { ass ->
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(ass.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = DiscoveryGreen)
-                            IconButton(onClick = { onDeleteClick(ass.id) }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFEF4444))
-                            }
-                        }
-                        Text(ass.description, fontSize = 11.sp, color = Color(0xFF334155))
-                    }
+        if (myClasses.isEmpty()) Text("You need an assigned class before you can publish assignments.", fontSize = 11.sp, color = SchoolSlate)
+        RemoteContent(state.assignments, "No assignments for your classes yet.", assignments) { list ->
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(list, key = { it.id }) { a ->
+                    val mine = a.teacherId == user.uid
+                    AssignmentCard(
+                        a, classesById[a.classId]?.name, subjectsById[a.subjectId]?.name, teachersById[a.teacherId]?.name,
+                        onEdit = if (mine) ({ viewModel.clearFormError(); editing = a }) else null,
+                        onDelete = if (mine) ({ deleting = a }) else null
+                    )
                 }
             }
         }
     }
+
+    val subjects = state.subjects.items
+    if (creating) AssignmentDialog(null, myClasses, subjects, emptyList(), user.uid, viewModel) { creating = false }
+    editing?.let { a -> AssignmentDialog(a, myClasses, subjects, emptyList(), user.uid, viewModel) { editing = null } }
+    deleting?.let { a -> ConfirmDeleteDialog("assignment \"${a.title}\"", { viewModel.deleteAssignment(a) }, { deleting = null }) }
 }
 
-// Notices Tab
 @Composable
-fun TeacherNoticesTab(
-    notices: List<Notice>,
-    assignedClasses: List<SchoolClass>,
-    onCreateNoticeClick: () -> Unit
+private fun TeacherNoticesTab(
+    state: SchoolState,
+    user: User,
+    myClasses: List<SchoolClass>,
+    classIds: Set<String>,
+    viewModel: SchoolAuthViewModel
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("School & Staff Notices (${notices.size})", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
+    var creating by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Notice?>(null) }
+    var deleting by remember { mutableStateOf<Notice?>(null) }
+    val notices = SchoolAccess.visibleNotices(state.notices.items, UserRole.TEACHER, user.uid, classIds)
+    val classesById = state.classes.items.associateBy { it.id }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("Notices (${notices.size})", Modifier.weight(1f))
             Button(
-                onClick = onCreateNoticeClick,
+                onClick = { viewModel.clearFormError(); creating = true },
+                enabled = myClasses.isNotEmpty(),
                 colors = ButtonDefaults.buttonColors(containerColor = DiscoveryGold),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(8.dp),
@@ -530,219 +306,24 @@ fun TeacherNoticesTab(
             ) {
                 Icon(Icons.Default.Campaign, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Post Notice", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                Text("Class Notice", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
             }
         }
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(notices) { notice ->
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(notice.title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(notice.message, fontSize = 11.sp, color = SchoolSlate)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Target: ${notice.targetRole}", fontSize = 10.sp, color = Color(0xFF64748B))
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Profile Tab
-@Composable
-fun TeacherProfileTab(
-    user: User,
-    teacher: Teacher,
-    assignedClasses: List<SchoolClass>,
-    onSignOut: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(CircleShape)
-                        .background(DiscoveryGreen),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = teacher.name.take(2).uppercase(),
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        fontSize = 24.sp
+        RemoteContent(state.notices, "No notices for teachers yet.", notices) { list ->
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(list, key = { it.id }) { notice ->
+                    val mine = notice.authorId == user.uid
+                    NoticeCard(
+                        notice, classesById[notice.classId]?.name, showAudience = true,
+                        onEdit = if (mine) ({ viewModel.clearFormError(); editing = notice }) else null,
+                        onDelete = if (mine) ({ deleting = notice }) else null
                     )
                 }
-
-                Text(teacher.name, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color(0xFF1E293B))
-                Text(teacher.email, fontSize = 12.sp, color = SchoolSlate)
-
-                Box(
-                    modifier = Modifier
-                        .background(DiscoveryGold.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 4.dp)
-                ) {
-                    Text("Role: TEACHER (CAPS Educator)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFB45309))
-                }
             }
-        }
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Educator Particulars", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                ProfileInfoRow("Employee Number", teacher.employeeNumber)
-                ProfileInfoRow("Contact Phone", teacher.phoneNumber.ifBlank { "+27 82 555 4102" })
-                ProfileInfoRow("Assigned Classes", assignedClasses.joinToString(", ") { it.name })
-                ProfileInfoRow("Campus Branch", "Discovery Primary School (D12)")
-                ProfileInfoRow("Firestore UID", user.uid.take(16) + "...")
-            }
-        }
-
-        Button(
-            onClick = onSignOut,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("teacher_profile_sign_out_button")
-        ) {
-            Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Sign Out", fontWeight = FontWeight.Bold)
         }
     }
-}
 
-@Composable
-fun ProfileInfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, fontSize = 12.sp, color = SchoolSlate)
-        Text(value, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
-    }
-}
-
-// Dialogs
-@Composable
-fun TeacherCreateAssignmentDialog(
-    teacher: Teacher,
-    assignedClasses: List<SchoolClass>,
-    onDismiss: () -> Unit,
-    onSave: (Assignment) -> Unit
-) {
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    val cls = assignedClasses.firstOrNull()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Create Class Assignment", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Task Title") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Task Instructions") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-                Text("Assigned to: ${cls?.name ?: "Grade 4A"}", fontSize = 11.sp, color = DiscoveryGreen, fontWeight = FontWeight.Bold)
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (title.isNotBlank()) {
-                        onSave(
-                            Assignment(
-                                title = title,
-                                description = description,
-                                classId = cls?.id ?: "class_4a",
-                                subjectId = "subj_eng",
-                                teacherId = teacher.uid,
-                                dueDate = Timestamp.now()
-                            )
-                        )
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = DiscoveryGreen)
-            ) {
-                Text("Create")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
-}
-
-@Composable
-fun TeacherCreateNoticeDialog(
-    teacher: Teacher,
-    assignedClasses: List<SchoolClass>,
-    onDismiss: () -> Unit,
-    onSave: (Notice) -> Unit
-) {
-    var title by remember { mutableStateOf("") }
-    var message by remember { mutableStateOf("") }
-    val cls = assignedClasses.firstOrNull()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Post Notice for ${cls?.name ?: "Class"}", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Notice Title") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = message, onValueChange = { message = it }, label = { Text("Message") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (title.isNotBlank() && message.isNotBlank()) {
-                        onSave(
-                            Notice(
-                                title = title,
-                                message = message,
-                                authorId = teacher.uid,
-                                targetRole = "STUDENT",
-                                published = true
-                            )
-                        )
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = DiscoveryGreen)
-            ) {
-                Text("Post")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
+    if (creating) NoticeDialog(null, myClasses, NoticeAudience.teacherChoices, allowWholeSchool = false, viewModel = viewModel) { creating = false }
+    editing?.let { n -> NoticeDialog(n, myClasses, NoticeAudience.teacherChoices, allowWholeSchool = false, viewModel = viewModel) { editing = null } }
+    deleting?.let { n -> ConfirmDeleteDialog("notice \"${n.title}\"", { viewModel.deleteNotice(n) }, { deleting = null }) }
 }

@@ -1,11 +1,11 @@
 package com.example.data.repository
 
-import android.content.Context
-import android.util.Log
-import com.example.data.auth.FirebaseAuthenticationRepository
 import com.example.data.firebase.FirebaseProvider
+import com.example.data.friendlyError
 import com.example.data.model.Assignment
 import com.example.data.model.Notice
+import com.example.data.model.NoticeAudience
+import com.example.data.model.SCHOOL_ID
 import com.example.data.model.SchoolClass
 import com.example.data.model.SchoolSettings
 import com.example.data.model.Student
@@ -13,27 +13,33 @@ import com.example.data.model.Subject
 import com.example.data.model.Teacher
 import com.example.data.model.User
 import com.example.data.model.UserRole
+import com.example.domain.FormValidation
+import com.example.domain.SchoolAccess
 import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentReference
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import com.google.firebase.firestore.Query
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.tasks.await
-import kotlinx.coroutines.withContext
 import java.util.UUID
 
-class FirebaseSchoolRepository(private val context: Context) {
+/** A live collection: items plus loading / error state (never fake fallback data). */
+data class Remote<T>(
+    val items: List<T> = emptyList(),
+    val loading: Boolean = true,
+    val error: String? = null
+) {
     companion object {
-        private const val TAG = "FirebaseSchoolRepo"
-        const val SCHOOL_ID = "discovery-primary"
+        fun <T> idle(): Remote<T> = Remote(loading = false)
+    }
+}
+
+class FirebaseSchoolRepository {
+    companion object {
         const val COLLECTION_USERS = "users"
         const val COLLECTION_TEACHERS = "teachers"
         const val COLLECTION_STUDENTS = "students"
@@ -43,672 +49,334 @@ class FirebaseSchoolRepository(private val context: Context) {
         const val COLLECTION_NOTICES = "notices"
         const val COLLECTION_SETTINGS = "settings"
         const val DOC_SCHOOL_INFO = "school_info"
+        private const val MAX_IN_QUERY = 30
     }
 
-    private val auth: FirebaseAuth by lazy { FirebaseProvider.auth }
-    private val firestore: FirebaseFirestore by lazy { FirebaseProvider.firestore }
-    private val authRepo: FirebaseAuthenticationRepository by lazy {
-        FirebaseAuthenticationRepository(auth, firestore)
-    }
+    private val db: FirebaseFirestore by lazy { FirebaseProvider.firestore }
 
-    private val repositoryScope = CoroutineScope(Dispatchers.IO)
+    private fun col(name: String) = db.collection(name)
+    private fun school(name: String): Query = col(name).whereEqualTo("schoolId", SCHOOL_ID)
 
-    // Current authenticated user document state
-    private val _currentUserDoc = MutableStateFlow<User?>(null)
-    val currentUserDoc: StateFlow<User?> = _currentUserDoc.asStateFlow()
+    // ==========================================
+    // LISTENERS (each flow owns exactly one snapshot listener, removed on cancel)
+    // ==========================================
 
-    // Local cached fallbacks for high reliability & immediate responsiveness
-    private val _teachersFlow = MutableStateFlow<List<Teacher>>(emptyList())
-    private val _studentsFlow = MutableStateFlow<List<Student>>(emptyList())
-    private val _classesFlow = MutableStateFlow<List<SchoolClass>>(emptyList())
-    private val _subjectsFlow = MutableStateFlow<List<Subject>>(emptyList())
-    private val _assignmentsFlow = MutableStateFlow<List<Assignment>>(emptyList())
-    private val _noticesFlow = MutableStateFlow<List<Notice>>(emptyList())
-    private val _settingsFlow = MutableStateFlow(SchoolSettings())
-
-    init {
-        FirebaseProvider.init(context)
-        repositoryScope.launch {
-            seedInitialDemoData()
-            setupAuthListener()
-        }
-    }
-
-    private fun setupAuthListener() {
-        if (!FirebaseProvider.isRealFirebaseConfigured) {
-            // When real cloud Firebase is not configured, preserve local active session
-            return
-        }
-        try {
-            auth.addAuthStateListener { firebaseAuth ->
-                val fbUser = firebaseAuth.currentUser
-                if (fbUser != null) {
-                    repositoryScope.launch {
-                        fetchUserDocument(fbUser.uid, fbUser.email)
-                    }
-                } else {
-                    _currentUserDoc.value = null
-                }
+    private fun <T : Any> listen(query: Query, type: Class<T>): Flow<Remote<T>> = callbackFlow {
+        val registration = query.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                trySend(Remote(loading = false, error = friendlyError(error)))
+            } else if (snapshot != null) {
+                trySend(Remote(snapshot.toObjects(type), loading = false))
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed setting up auth listener: ${e.message}")
         }
+        awaitClose { registration.remove() }
     }
 
-    private suspend fun fetchUserDocument(uid: String, email: String?) {
-        try {
-            val docSnap = firestore.collection(COLLECTION_USERS).document(uid).get().await()
-            if (docSnap.exists()) {
-                val user = docSnap.toObject(User::class.java)
-                _currentUserDoc.value = user
-            } else {
-                val roleStr = when {
-                    email?.contains("admin", ignoreCase = true) == true -> UserRole.ADMIN.name
-                    email?.contains("teacher", ignoreCase = true) == true -> UserRole.TEACHER.name
-                    email?.contains("parent", ignoreCase = true) == true -> UserRole.PARENT.name
-                    email?.contains("staff", ignoreCase = true) == true -> UserRole.STAFF.name
-                    else -> UserRole.STUDENT.name
-                }
-                val displayName = email?.substringBefore("@")?.replace(".", " ")?.capitalize() ?: "User"
-                val newUser = User(
-                    uid = uid,
-                    email = email ?: "",
-                    displayName = displayName,
-                    role = roleStr,
-                    schoolId = SCHOOL_ID,
-                    active = true,
-                    createdAt = Timestamp.now(),
-                    updatedAt = Timestamp.now()
+    private fun <T : Any> listenDoc(ref: DocumentReference, type: Class<T>): Flow<Remote<T>> = callbackFlow {
+        val registration = ref.addSnapshotListener { snapshot, error ->
+            when {
+                error != null -> trySend(Remote(loading = false, error = friendlyError(error)))
+                snapshot == null || !snapshot.exists() -> trySend(Remote(emptyList(), loading = false))
+                else -> trySend(Remote(listOfNotNull(snapshot.toObject(type)), loading = false))
+            }
+        }
+        awaitClose { registration.remove() }
+    }
+
+    /** whereIn is limited to 30 values, so larger lists are split and merged. */
+    private fun <T : Any> listenIn(base: Query, field: String, values: List<String>, type: Class<T>): Flow<Remote<T>> {
+        val distinct = values.filter { it.isNotBlank() }.distinct()
+        if (distinct.isEmpty()) return flowOf(Remote.idle())
+        val chunks = distinct.chunked(MAX_IN_QUERY)
+        return callbackFlow {
+            // Snapshot callbacks arrive on the main thread, so this list is not shared across threads.
+            val parts = MutableList<Remote<T>>(chunks.size) { Remote() }
+            fun emitMerged() {
+                trySend(
+                    Remote(
+                        items = parts.flatMap { it.items },
+                        loading = parts.any { it.loading },
+                        error = parts.firstNotNullOfOrNull { it.error }
+                    )
                 )
-                firestore.collection(COLLECTION_USERS).document(uid).set(newUser).await()
-                _currentUserDoc.value = newUser
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Fetching user document fallback: ${e.message}")
-            val roleStr = if (email?.contains("admin", ignoreCase = true) == true) UserRole.ADMIN.name else UserRole.TEACHER.name
-            val fallback = User(
-                uid = uid,
-                email = email ?: "staff@discoveryprimary.co.za",
-                displayName = if (roleStr == UserRole.ADMIN.name) "Principal Raymond Peters" else "Mrs. Nomvula Khumalo",
-                role = roleStr,
-                schoolId = SCHOOL_ID,
-                active = true,
-                createdAt = Timestamp.now(),
-                updatedAt = Timestamp.now()
+            val registrations = chunks.mapIndexed { index, chunk ->
+                base.whereIn(field, chunk).addSnapshotListener { snapshot, error ->
+                    parts[index] = when {
+                        error != null -> Remote(loading = false, error = friendlyError(error))
+                        snapshot != null -> Remote(snapshot.toObjects(type), loading = false)
+                        else -> return@addSnapshotListener
+                    }
+                    emitMerged()
+                }
+            }
+            awaitClose { registrations.forEach { it.remove() } }
+        }
+    }
+
+    fun allUsers(): Flow<Remote<User>> = listen(school(COLLECTION_USERS), User::class.java)
+    fun teachers(): Flow<Remote<Teacher>> = listen(school(COLLECTION_TEACHERS), Teacher::class.java)
+    fun teacher(uid: String): Flow<Remote<Teacher>> = listenDoc(col(COLLECTION_TEACHERS).document(uid), Teacher::class.java)
+    fun allStudents(): Flow<Remote<Student>> = listen(school(COLLECTION_STUDENTS), Student::class.java)
+    fun studentsInClasses(classIds: List<String>): Flow<Remote<Student>> =
+        listenIn(school(COLLECTION_STUDENTS), "classId", classIds, Student::class.java)
+    fun childrenOf(parentUid: String): Flow<Remote<Student>> =
+        listen(col(COLLECTION_STUDENTS).whereArrayContains("parentIds", parentUid), Student::class.java)
+    fun studentRecordsOf(studentUid: String): Flow<Remote<Student>> =
+        listen(col(COLLECTION_STUDENTS).whereEqualTo("userId", studentUid), Student::class.java)
+    fun classes(): Flow<Remote<SchoolClass>> = listen(school(COLLECTION_CLASSES), SchoolClass::class.java)
+    fun subjects(): Flow<Remote<Subject>> = listen(school(COLLECTION_SUBJECTS), Subject::class.java)
+    fun assignments(): Flow<Remote<Assignment>> = listen(school(COLLECTION_ASSIGNMENTS), Assignment::class.java)
+    fun allNotices(): Flow<Remote<Notice>> = listen(school(COLLECTION_NOTICES), Notice::class.java)
+
+    /** Published notices addressed to everyone or to [role]. */
+    fun noticesFor(role: UserRole): Flow<Remote<Notice>> = listen(
+        school(COLLECTION_NOTICES)
+            .whereEqualTo("published", true)
+            .whereIn("targetRole", listOf(NoticeAudience.ALL, role.name)),
+        Notice::class.java
+    )
+
+    fun noticesAuthoredBy(uid: String): Flow<Remote<Notice>> =
+        listen(school(COLLECTION_NOTICES).whereEqualTo("authorId", uid), Notice::class.java)
+
+    fun settings(): Flow<Remote<SchoolSettings>> =
+        listenDoc(col(COLLECTION_SETTINGS).document(DOC_SCHOOL_INFO), SchoolSettings::class.java)
+
+    // ==========================================
+    // USERS & PROFILES
+    // ==========================================
+
+    /** Admin edit of another account (role / status / contact details). */
+    suspend fun updateUser(user: User): Result<Unit> = write {
+        UserRole.fromString(user.role) ?: throw IllegalArgumentException("Choose a valid role.")
+        FormValidation.required(user.displayName, "Name")?.let { throw IllegalArgumentException(it) }
+        FormValidation.phone(user.phoneNumber)?.let { throw IllegalArgumentException(it) }
+        col(COLLECTION_USERS).document(user.uid).set(user.copy(schoolId = SCHOOL_ID, updatedAt = Timestamp.now())).await()
+    }
+
+    /** Self-service profile edit: rules only allow these three fields to change. */
+    suspend fun updateOwnProfile(uid: String, displayName: String, phoneNumber: String): Result<Unit> = write {
+        FormValidation.required(displayName, "Name")?.let { throw IllegalArgumentException(it) }
+        if (displayName.trim().length > 100) throw IllegalArgumentException("Name is too long.")
+        FormValidation.phone(phoneNumber)?.let { throw IllegalArgumentException(it) }
+        col(COLLECTION_USERS).document(uid).update(
+            mapOf(
+                "displayName" to displayName.trim(),
+                "phoneNumber" to phoneNumber.trim(),
+                "updatedAt" to Timestamp.now()
             )
-            _currentUserDoc.value = fallback
-        }
+        ).await()
     }
 
     // ==========================================
-    // AUTHENTICATION
+    // TEACHERS (teacher.classIds <-> class.teacherIds, teacher.subjectIds <-> subject.teacherIds)
     // ==========================================
 
-    suspend fun signIn(email: String, pass: String): Result<User> = withContext(Dispatchers.IO) {
-        val result = authRepo.signInWithEmail(email, pass)
-        result.onSuccess { user ->
-            _currentUserDoc.value = user
-        }
-        result
-    }
-
-    suspend fun signUp(email: String, pass: String, displayName: String, role: String): Result<User> = withContext(Dispatchers.IO) {
-        val result = authRepo.registerWithEmail(email, pass, displayName, role, SCHOOL_ID)
-        result.onSuccess { user ->
-            _currentUserDoc.value = user
-        }
-        result
-    }
-
-    suspend fun verifyPhoneOtp(verificationId: String, code: String): Result<User> = withContext(Dispatchers.IO) {
-        val result = authRepo.verifyPhoneCode(verificationId, code)
-        result.onSuccess { user ->
-            _currentUserDoc.value = user
-        }
-        result
-    }
-
-    fun signOut() {
-        repositoryScope.launch {
-            authRepo.signOut()
-        }
-        _currentUserDoc.value = null
-    }
-
-    fun setCurrentUser(user: User?) {
-        _currentUserDoc.value = user
-    }
-
-    // ==========================================
-    // TEACHERS CRUD
-    // ==========================================
-
-    fun getTeachersFlow(): Flow<List<Teacher>> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_TEACHERS)
-                .whereEqualTo("schoolId", SCHOOL_ID)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_teachersFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.toObjects(Teacher::class.java)
-                        _teachersFlow.value = list
-                        trySend(list)
-                    } else {
-                        trySend(_teachersFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_teachersFlow.value)
-        }
-        awaitClose { listener?.remove() }
-    }
-
-    suspend fun saveTeacher(teacher: Teacher): Result<Unit> = withContext(Dispatchers.IO) {
-        val uid = if (teacher.uid.isBlank()) UUID.randomUUID().toString() else teacher.uid
-        val item = teacher.copy(
-            uid = uid,
-            schoolId = SCHOOL_ID,
-            updatedAt = Timestamp.now()
+    suspend fun saveTeacher(teacher: Teacher, previous: Teacher?): Result<Unit> = write {
+        require(teacher.uid.isNotBlank()) { "Teacher account is missing." }
+        FormValidation.required(teacher.firstName, "First name")?.let { throw IllegalArgumentException(it) }
+        FormValidation.phone(teacher.phoneNumber)?.let { throw IllegalArgumentException(it) }
+        val now = Timestamp.now()
+        val batch = db.batch()
+        batch.set(
+            col(COLLECTION_TEACHERS).document(teacher.uid),
+            teacher.copy(
+                userId = teacher.uid,
+                schoolId = SCHOOL_ID,
+                createdAt = previous?.createdAt ?: now,
+                updatedAt = now
+            )
         )
-        try {
-            firestore.collection(COLLECTION_TEACHERS).document(uid).set(item).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save teacher firestore: ${e.message}")
-        }
-        val current = _teachersFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.uid == uid }
-        if (index >= 0) current[index] = item else current.add(0, item)
-        _teachersFlow.value = current
-        Result.success(Unit)
+        val (addedClasses, removedClasses) = SchoolAccess.diff(previous?.classIds.orEmpty(), teacher.classIds)
+        addedClasses.forEach { batch.update(col(COLLECTION_CLASSES).document(it), "teacherIds", FieldValue.arrayUnion(teacher.uid)) }
+        removedClasses.forEach { batch.update(col(COLLECTION_CLASSES).document(it), "teacherIds", FieldValue.arrayRemove(teacher.uid)) }
+        val (addedSubjects, removedSubjects) = SchoolAccess.diff(previous?.subjectIds.orEmpty(), teacher.subjectIds)
+        addedSubjects.forEach { batch.update(col(COLLECTION_SUBJECTS).document(it), "teacherIds", FieldValue.arrayUnion(teacher.uid)) }
+        removedSubjects.forEach { batch.update(col(COLLECTION_SUBJECTS).document(it), "teacherIds", FieldValue.arrayRemove(teacher.uid)) }
+        batch.commit().await()
     }
 
-    suspend fun deleteTeacher(teacherUid: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_TEACHERS).document(teacherUid).delete().await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Delete teacher firestore: ${e.message}")
+    /** Removes the teacher record and every class/subject link. The login itself is
+     *  deactivated separately from the Users tab. */
+    suspend fun deleteTeacher(teacher: Teacher): Result<Unit> = write {
+        val batch = db.batch()
+        batch.delete(col(COLLECTION_TEACHERS).document(teacher.uid))
+        teacher.classIds.filter { it.isNotBlank() }.forEach {
+            batch.update(col(COLLECTION_CLASSES).document(it), "teacherIds", FieldValue.arrayRemove(teacher.uid))
         }
-        _teachersFlow.value = _teachersFlow.value.filter { it.uid != teacherUid }
-        Result.success(Unit)
+        teacher.subjectIds.filter { it.isNotBlank() }.forEach {
+            batch.update(col(COLLECTION_SUBJECTS).document(it), "teacherIds", FieldValue.arrayRemove(teacher.uid))
+        }
+        batch.commit().await()
     }
 
     // ==========================================
-    // STUDENTS CRUD
+    // STUDENTS
     // ==========================================
 
-    fun getStudentsFlow(): Flow<List<Student>> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_STUDENTS)
-                .whereEqualTo("schoolId", SCHOOL_ID)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_studentsFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.toObjects(Student::class.java)
-                        _studentsFlow.value = list
-                        trySend(list)
-                    } else {
-                        trySend(_studentsFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_studentsFlow.value)
-        }
-        awaitClose { listener?.remove() }
+    suspend fun saveStudent(student: Student): Result<Unit> = write {
+        FormValidation.required(student.firstName, "First name")?.let { throw IllegalArgumentException(it) }
+        FormValidation.required(student.classId, "Class")?.let { throw IllegalArgumentException(it) }
+        if (student.email.isNotBlank()) FormValidation.email(student.email)?.let { throw IllegalArgumentException(it) }
+        val id = student.uid.ifBlank { UUID.randomUUID().toString() }
+        val now = Timestamp.now()
+        col(COLLECTION_STUDENTS).document(id).set(
+            student.copy(
+                uid = id,
+                schoolId = SCHOOL_ID,
+                parentIds = student.parentIds.filter { it.isNotBlank() }.distinct(),
+                createdAt = student.createdAt ?: now,
+                updatedAt = now
+            )
+        ).await()
     }
 
-    suspend fun saveStudent(student: Student): Result<Unit> = withContext(Dispatchers.IO) {
-        val uid = if (student.uid.isBlank()) UUID.randomUUID().toString() else student.uid
-        val item = student.copy(
-            uid = uid,
-            schoolId = SCHOOL_ID,
-            updatedAt = Timestamp.now()
+    suspend fun deleteStudent(studentId: String): Result<Unit> = write {
+        col(COLLECTION_STUDENTS).document(studentId).delete().await()
+    }
+
+    // ==========================================
+    // CLASSES
+    // ==========================================
+
+    suspend fun saveClass(schoolClass: SchoolClass, previous: SchoolClass?): Result<Unit> = write {
+        FormValidation.required(schoolClass.name, "Class name")?.let { throw IllegalArgumentException(it) }
+        val id = schoolClass.id.ifBlank { UUID.randomUUID().toString() }
+        val now = Timestamp.now()
+        val batch = db.batch()
+        batch.set(
+            col(COLLECTION_CLASSES).document(id),
+            schoolClass.copy(id = id, schoolId = SCHOOL_ID, createdAt = previous?.createdAt ?: now, updatedAt = now)
         )
-        try {
-            firestore.collection(COLLECTION_STUDENTS).document(uid).set(item).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save student firestore: ${e.message}")
-        }
-        val current = _studentsFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.uid == uid }
-        if (index >= 0) current[index] = item else current.add(0, item)
-        _studentsFlow.value = current
-        Result.success(Unit)
+        val (added, removed) = SchoolAccess.diff(previous?.teacherIds.orEmpty(), schoolClass.teacherIds)
+        added.forEach { batch.update(col(COLLECTION_TEACHERS).document(it), "classIds", FieldValue.arrayUnion(id)) }
+        removed.forEach { batch.update(col(COLLECTION_TEACHERS).document(it), "classIds", FieldValue.arrayRemove(id)) }
+        batch.commit().await()
     }
 
-    suspend fun deleteStudent(studentUid: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_STUDENTS).document(studentUid).delete().await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Delete student firestore: ${e.message}")
+    suspend fun deleteClass(schoolClass: SchoolClass, enrolledStudents: Int): Result<Unit> = write {
+        if (enrolledStudents > 0) {
+            throw IllegalStateException("Move the $enrolledStudents enrolled learner(s) to another class before deleting ${schoolClass.name}.")
         }
-        _studentsFlow.value = _studentsFlow.value.filter { it.uid != studentUid }
-        Result.success(Unit)
+        val batch = db.batch()
+        batch.delete(col(COLLECTION_CLASSES).document(schoolClass.id))
+        schoolClass.teacherIds.filter { it.isNotBlank() }.forEach {
+            batch.update(col(COLLECTION_TEACHERS).document(it), "classIds", FieldValue.arrayRemove(schoolClass.id))
+        }
+        batch.commit().await()
     }
 
     // ==========================================
-    // CLASSES CRUD
+    // SUBJECTS (subject.teacherIds <-> teacher.subjectIds, class.subjectIds)
     // ==========================================
 
-    fun getClassesFlow(): Flow<List<SchoolClass>> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_CLASSES)
-                .whereEqualTo("schoolId", SCHOOL_ID)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_classesFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.toObjects(SchoolClass::class.java)
-                        _classesFlow.value = list
-                        trySend(list)
-                    } else {
-                        trySend(_classesFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_classesFlow.value)
-        }
-        awaitClose { listener?.remove() }
-    }
-
-    suspend fun saveClass(schoolClass: SchoolClass): Result<Unit> = withContext(Dispatchers.IO) {
-        val classId = if (schoolClass.id.isBlank()) UUID.randomUUID().toString() else schoolClass.id
-        val item = schoolClass.copy(
-            id = classId,
-            schoolId = SCHOOL_ID,
-            updatedAt = Timestamp.now()
+    suspend fun saveSubject(
+        subject: Subject,
+        previous: Subject?,
+        classIds: List<String>,
+        previousClassIds: List<String>
+    ): Result<Unit> = write {
+        FormValidation.required(subject.name, "Subject name")?.let { throw IllegalArgumentException(it) }
+        val id = subject.id.ifBlank { UUID.randomUUID().toString() }
+        val now = Timestamp.now()
+        val batch = db.batch()
+        batch.set(
+            col(COLLECTION_SUBJECTS).document(id),
+            subject.copy(id = id, schoolId = SCHOOL_ID, createdAt = previous?.createdAt ?: now, updatedAt = now)
         )
-        try {
-            firestore.collection(COLLECTION_CLASSES).document(classId).set(item).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save class firestore: ${e.message}")
-        }
-        val current = _classesFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.id == classId }
-        if (index >= 0) current[index] = item else current.add(item)
-        _classesFlow.value = current
-        Result.success(Unit)
+        val (addedTeachers, removedTeachers) = SchoolAccess.diff(previous?.teacherIds.orEmpty(), subject.teacherIds)
+        addedTeachers.forEach { batch.update(col(COLLECTION_TEACHERS).document(it), "subjectIds", FieldValue.arrayUnion(id)) }
+        removedTeachers.forEach { batch.update(col(COLLECTION_TEACHERS).document(it), "subjectIds", FieldValue.arrayRemove(id)) }
+        val (addedClasses, removedClasses) = SchoolAccess.diff(previousClassIds, classIds)
+        addedClasses.forEach { batch.update(col(COLLECTION_CLASSES).document(it), "subjectIds", FieldValue.arrayUnion(id)) }
+        removedClasses.forEach { batch.update(col(COLLECTION_CLASSES).document(it), "subjectIds", FieldValue.arrayRemove(id)) }
+        batch.commit().await()
     }
 
-    suspend fun deleteClass(classId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_CLASSES).document(classId).delete().await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Delete class firestore: ${e.message}")
+    suspend fun deleteSubject(subject: Subject, classIds: List<String>): Result<Unit> = write {
+        val batch = db.batch()
+        batch.delete(col(COLLECTION_SUBJECTS).document(subject.id))
+        subject.teacherIds.filter { it.isNotBlank() }.forEach {
+            batch.update(col(COLLECTION_TEACHERS).document(it), "subjectIds", FieldValue.arrayRemove(subject.id))
         }
-        _classesFlow.value = _classesFlow.value.filter { it.id != classId }
-        Result.success(Unit)
-    }
-
-    // ==========================================
-    // SUBJECTS CRUD
-    // ==========================================
-
-    fun getSubjectsFlow(): Flow<List<Subject>> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_SUBJECTS)
-                .whereEqualTo("schoolId", SCHOOL_ID)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_subjectsFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.toObjects(Subject::class.java)
-                        _subjectsFlow.value = list
-                        trySend(list)
-                    } else {
-                        trySend(_subjectsFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_subjectsFlow.value)
+        classIds.filter { it.isNotBlank() }.forEach {
+            batch.update(col(COLLECTION_CLASSES).document(it), "subjectIds", FieldValue.arrayRemove(subject.id))
         }
-        awaitClose { listener?.remove() }
-    }
-
-    suspend fun saveSubject(subject: Subject): Result<Unit> = withContext(Dispatchers.IO) {
-        val subjectId = if (subject.id.isBlank()) UUID.randomUUID().toString() else subject.id
-        val item = subject.copy(
-            id = subjectId,
-            schoolId = SCHOOL_ID,
-            updatedAt = Timestamp.now()
-        )
-        try {
-            firestore.collection(COLLECTION_SUBJECTS).document(subjectId).set(item).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save subject firestore: ${e.message}")
-        }
-        val current = _subjectsFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.id == subjectId }
-        if (index >= 0) current[index] = item else current.add(item)
-        _subjectsFlow.value = current
-        Result.success(Unit)
-    }
-
-    suspend fun deleteSubject(subjectId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_SUBJECTS).document(subjectId).delete().await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Delete subject firestore: ${e.message}")
-        }
-        _subjectsFlow.value = _subjectsFlow.value.filter { it.id != subjectId }
-        Result.success(Unit)
+        batch.commit().await()
     }
 
     // ==========================================
-    // ASSIGNMENTS CRUD
+    // ASSIGNMENTS
     // ==========================================
 
-    fun getAssignmentsFlow(): Flow<List<Assignment>> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_ASSIGNMENTS)
-                .whereEqualTo("schoolId", SCHOOL_ID)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_assignmentsFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.toObjects(Assignment::class.java)
-                        _assignmentsFlow.value = list
-                        trySend(list)
-                    } else {
-                        trySend(_assignmentsFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_assignmentsFlow.value)
-        }
-        awaitClose { listener?.remove() }
+    suspend fun saveAssignment(assignment: Assignment): Result<Unit> = write {
+        FormValidation.required(assignment.title, "Title")?.let { throw IllegalArgumentException(it) }
+        FormValidation.required(assignment.classId, "Class")?.let { throw IllegalArgumentException(it) }
+        if (assignment.title.trim().length > 200) throw IllegalArgumentException("Title is too long.")
+        val id = assignment.id.ifBlank { UUID.randomUUID().toString() }
+        val now = Timestamp.now()
+        col(COLLECTION_ASSIGNMENTS).document(id).set(
+            assignment.copy(
+                id = id,
+                title = assignment.title.trim(),
+                description = assignment.description.trim(),
+                schoolId = SCHOOL_ID,
+                createdAt = assignment.createdAt ?: now,
+                updatedAt = now
+            )
+        ).await()
     }
 
-    suspend fun saveAssignment(assignment: Assignment): Result<Unit> = withContext(Dispatchers.IO) {
-        val assignmentId = if (assignment.id.isBlank()) UUID.randomUUID().toString() else assignment.id
-        val item = assignment.copy(
-            id = assignmentId,
-            schoolId = SCHOOL_ID,
-            updatedAt = Timestamp.now()
-        )
-        try {
-            firestore.collection(COLLECTION_ASSIGNMENTS).document(assignmentId).set(item).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save assignment firestore: ${e.message}")
-        }
-        val current = _assignmentsFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.id == assignmentId }
-        if (index >= 0) current[index] = item else current.add(0, item)
-        _assignmentsFlow.value = current
-        Result.success(Unit)
-    }
-
-    suspend fun deleteAssignment(assignmentId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_ASSIGNMENTS).document(assignmentId).delete().await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Delete assignment firestore: ${e.message}")
-        }
-        _assignmentsFlow.value = _assignmentsFlow.value.filter { it.id != assignmentId }
-        Result.success(Unit)
+    suspend fun deleteAssignment(assignmentId: String): Result<Unit> = write {
+        col(COLLECTION_ASSIGNMENTS).document(assignmentId).delete().await()
     }
 
     // ==========================================
-    // NOTICES CRUD
+    // NOTICES
     // ==========================================
 
-    fun getNoticesFlow(): Flow<List<Notice>> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_NOTICES)
-                .whereEqualTo("schoolId", SCHOOL_ID)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_noticesFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.toObjects(Notice::class.java)
-                        _noticesFlow.value = list
-                        trySend(list)
-                    } else {
-                        trySend(_noticesFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_noticesFlow.value)
-        }
-        awaitClose { listener?.remove() }
+    suspend fun saveNotice(notice: Notice): Result<Unit> = write {
+        FormValidation.required(notice.title, "Title")?.let { throw IllegalArgumentException(it) }
+        FormValidation.required(notice.message, "Message")?.let { throw IllegalArgumentException(it) }
+        if (notice.title.trim().length > 200) throw IllegalArgumentException("Title is too long.")
+        val id = notice.id.ifBlank { UUID.randomUUID().toString() }
+        val now = Timestamp.now()
+        col(COLLECTION_NOTICES).document(id).set(
+            notice.copy(
+                id = id,
+                title = notice.title.trim(),
+                message = notice.message.trim(),
+                schoolId = SCHOOL_ID,
+                createdAt = notice.createdAt ?: now,
+                updatedAt = now
+            )
+        ).await()
     }
 
-    suspend fun saveNotice(notice: Notice): Result<Unit> = withContext(Dispatchers.IO) {
-        val noticeId = if (notice.id.isBlank()) UUID.randomUUID().toString() else notice.id
-        val item = notice.copy(
-            id = noticeId,
-            schoolId = SCHOOL_ID,
-            updatedAt = Timestamp.now()
-        )
-        try {
-            firestore.collection(COLLECTION_NOTICES).document(noticeId).set(item).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save notice firestore: ${e.message}")
-        }
-        val current = _noticesFlow.value.toMutableList()
-        val index = current.indexOfFirst { it.id == noticeId }
-        if (index >= 0) current[index] = item else current.add(0, item)
-        _noticesFlow.value = current
-        Result.success(Unit)
-    }
-
-    suspend fun deleteNotice(noticeId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_NOTICES).document(noticeId).delete().await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Delete notice firestore: ${e.message}")
-        }
-        _noticesFlow.value = _noticesFlow.value.filter { it.id != noticeId }
-        Result.success(Unit)
+    suspend fun deleteNotice(noticeId: String): Result<Unit> = write {
+        col(COLLECTION_NOTICES).document(noticeId).delete().await()
     }
 
     // ==========================================
     // SETTINGS
     // ==========================================
 
-    fun getSettingsFlow(): Flow<SchoolSettings> = callbackFlow {
-        var listener: ListenerRegistration? = null
-        try {
-            listener = firestore.collection(COLLECTION_SETTINGS).document(DOC_SCHOOL_INFO)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        trySend(_settingsFlow.value)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null && snapshot.exists()) {
-                        val s = snapshot.toObject(SchoolSettings::class.java) ?: _settingsFlow.value
-                        _settingsFlow.value = s
-                        trySend(s)
-                    } else {
-                        trySend(_settingsFlow.value)
-                    }
-                }
-        } catch (e: Exception) {
-            trySend(_settingsFlow.value)
-        }
-        awaitClose { listener?.remove() }
+    suspend fun saveSettings(settings: SchoolSettings): Result<Unit> = write {
+        FormValidation.required(settings.schoolName, "School name")?.let { throw IllegalArgumentException(it) }
+        if (settings.contactEmail.isNotBlank()) FormValidation.email(settings.contactEmail)?.let { throw IllegalArgumentException(it) }
+        FormValidation.phone(settings.contactPhone)?.let { throw IllegalArgumentException(it) }
+        col(COLLECTION_SETTINGS).document(DOC_SCHOOL_INFO).set(settings.copy(schoolId = SCHOOL_ID)).await()
     }
 
-    suspend fun saveSettings(settings: SchoolSettings): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            firestore.collection(COLLECTION_SETTINGS).document(DOC_SCHOOL_INFO).set(settings).await()
-        } catch (e: Exception) {
-            Log.w(TAG, "Save settings firestore: ${e.message}")
-        }
-        _settingsFlow.value = settings
+    /** Runs a write and converts any failure (validation, permission, network) into a
+     *  user-facing message instead of silently reporting success. */
+    private suspend fun write(block: suspend () -> Unit): Result<Unit> = try {
+        block()
         Result.success(Unit)
-    }
-
-    // ==========================================
-    // INITIAL SEED DATA (DISCOVERY PRIMARY SCHOOL)
-    // ==========================================
-
-    private suspend fun seedInitialDemoData() {
-        val initialClasses = listOf(
-            SchoolClass("class_4a", SCHOOL_ID, "Grade 4A", "Grade 4", listOf("teach_khumalo"), listOf("subj_eng", "subj_nst")),
-            SchoolClass("class_4b", SCHOOL_ID, "Grade 4B", "Grade 4", listOf("teach_sithole"), listOf("subj_math")),
-            SchoolClass("class_5a", SCHOOL_ID, "Grade 5A", "Grade 5", listOf("teach_pillay"), listOf("subj_robotics")),
-            SchoolClass("class_7a", SCHOOL_ID, "Grade 7A", "Grade 7", listOf("teach_adams"), listOf("subj_soc"))
-        )
-        _classesFlow.value = initialClasses
-
-        val initialSubjects = listOf(
-            Subject("subj_math", SCHOOL_ID, "Mathematics", "MATH-CAPS-4", listOf("teach_sithole")),
-            Subject("subj_eng", SCHOOL_ID, "English Home Language", "ENG-CAPS-4", listOf("teach_khumalo")),
-            Subject("subj_nst", SCHOOL_ID, "Natural Sciences & Tech", "NST-CAPS-4", listOf("teach_khumalo")),
-            Subject("subj_robotics", SCHOOL_ID, "Coding & Robotics", "COD-CAPS-4", listOf("teach_pillay")),
-            Subject("subj_soc", SCHOOL_ID, "Social Sciences", "SOC-CAPS-4", listOf("teach_adams"))
-        )
-        _subjectsFlow.value = initialSubjects
-
-        val initialTeachers = listOf(
-            Teacher(
-                uid = "teach_khumalo",
-                userId = "teacher_uid_khumalo",
-                schoolId = SCHOOL_ID,
-                employeeNumber = "DPS-EMP-102",
-                firstName = "Nomvula",
-                lastName = "Khumalo",
-                email = "teacher.khumalo@discoveryprimary.co.za",
-                phoneNumber = "+27825554102",
-                classIds = listOf("class_4a"),
-                subjectIds = listOf("subj_eng", "subj_nst")
-            ),
-            Teacher(
-                uid = "teach_sithole",
-                userId = "teacher_uid_sithole",
-                schoolId = SCHOOL_ID,
-                employeeNumber = "DPS-EMP-104",
-                firstName = "Thabo",
-                lastName = "Sithole",
-                email = "teacher.sithole@discoveryprimary.co.za",
-                phoneNumber = "+27834448921",
-                classIds = listOf("class_4b"),
-                subjectIds = listOf("subj_math")
-            ),
-            Teacher(
-                uid = "teach_pillay",
-                userId = "teacher_uid_pillay",
-                schoolId = SCHOOL_ID,
-                employeeNumber = "DPS-EMP-108",
-                firstName = "Kavish",
-                lastName = "Pillay",
-                email = "k.pillay@discoveryprimary.co.za",
-                phoneNumber = "+27712223411",
-                classIds = listOf("class_5a"),
-                subjectIds = listOf("subj_robotics")
-            )
-        )
-        _teachersFlow.value = initialTeachers
-
-        val initialStudents = listOf(
-            Student("stu_1", "stu_user_1", SCHOOL_ID, "DPS-4012", "Siyabonga", "Dlamini", "siyabonga.d@discoveryprimary.co.za", "+27821234567", "class_4a", listOf("parent_dlamini")),
-            Student("stu_2", "stu_user_2", SCHOOL_ID, "DPS-4015", "Amahle", "Ndlovu", "amahle.n@discoveryprimary.co.za", "+27832345678", "class_4a", listOf("parent_ndlovu")),
-            Student("stu_3", "stu_user_3", SCHOOL_ID, "DPS-4022", "Liam", "Van Der Merwe", "liam.vdm@discoveryprimary.co.za", "+27843456789", "class_4a", listOf("parent_vdm")),
-            Student("stu_4", "stu_user_4", SCHOOL_ID, "DPS-4031", "Fatima", "Patel", "fatima.p@discoveryprimary.co.za", "+27824567890", "class_4a", listOf("parent_patel")),
-            Student("stu_5", "stu_user_5", SCHOOL_ID, "DPS-4045", "Kagiso", "Mokoena", "kagiso.m@discoveryprimary.co.za", "+27795678901", "class_4a", listOf("parent_mokoena")),
-            Student("stu_6", "stu_user_6", SCHOOL_ID, "DPS-4050", "Chloe", "Smith", "chloe.s@discoveryprimary.co.za", "+27836789012", "class_4b", listOf("parent_smith"))
-        )
-        _studentsFlow.value = initialStudents
-
-        val initialAssignments = listOf(
-            Assignment(
-                id = "ass_1",
-                schoolId = SCHOOL_ID,
-                classId = "class_4a",
-                subjectId = "subj_math",
-                teacherId = "teach_sithole",
-                title = "Fractions & Decimals Problem Set",
-                description = "Complete pages 42-45 in the CAPS Mathematics workbook.",
-                dueDate = Timestamp.now()
-            ),
-            Assignment(
-                id = "ass_2",
-                schoolId = SCHOOL_ID,
-                classId = "class_4a",
-                subjectId = "subj_nst",
-                teacherId = "teach_khumalo",
-                title = "Plant Cell Structure Model & Diagram",
-                description = "Draw and label a plant cell showing cell wall, nucleus, and cytoplasm.",
-                dueDate = Timestamp.now()
-            ),
-            Assignment(
-                id = "ass_3",
-                schoolId = SCHOOL_ID,
-                classId = "class_4a",
-                subjectId = "subj_eng",
-                teacherId = "teach_khumalo",
-                title = "Creative Writing: Mapungubwe Story",
-                description = "Write a 150-word narrative essay describing life in early southern African kingdoms.",
-                dueDate = Timestamp.now()
-            )
-        )
-        _assignmentsFlow.value = initialAssignments
-
-        val initialNotices = listOf(
-            Notice(
-                id = "not_1",
-                schoolId = SCHOOL_ID,
-                authorId = "admin_uid_demo",
-                title = "Term 3 Examination Timetable Finalized",
-                message = "The official GDE District D12 exam timetable has been posted. Assessments commence 15 October.",
-                targetRole = "ALL",
-                published = true,
-                createdAt = Timestamp.now()
-            ),
-            Notice(
-                id = "not_2",
-                schoolId = SCHOOL_ID,
-                authorId = "teach_khumalo",
-                title = "Grade 4 Science Project Submissions Notice",
-                message = "Reminder for Grade 4A learners: bring your Natural Science recycled materials tomorrow.",
-                targetRole = "STUDENT",
-                published = true,
-                createdAt = Timestamp.now()
-            ),
-            Notice(
-                id = "not_3",
-                schoolId = SCHOOL_ID,
-                authorId = "admin_uid_demo",
-                title = "Severe Weather Protocol & Indoor Extramurals",
-                message = "In light of thunder forecast in Roodepoort, extramural sports will be held in the school hall.",
-                targetRole = "ALL",
-                published = true,
-                createdAt = Timestamp.now()
-            )
-        )
-        _noticesFlow.value = initialNotices
-
-        // Push to Firestore asynchronously
-        try {
-            initialClasses.forEach { firestore.collection(COLLECTION_CLASSES).document(it.id).set(it) }
-            initialSubjects.forEach { firestore.collection(COLLECTION_SUBJECTS).document(it.id).set(it) }
-            initialTeachers.forEach { firestore.collection(COLLECTION_TEACHERS).document(it.uid).set(it) }
-            initialStudents.forEach { firestore.collection(COLLECTION_STUDENTS).document(it.uid).set(it) }
-            initialAssignments.forEach { firestore.collection(COLLECTION_ASSIGNMENTS).document(it.id).set(it) }
-            initialNotices.forEach { firestore.collection(COLLECTION_NOTICES).document(it.id).set(it) }
-            firestore.collection(COLLECTION_SETTINGS).document(DOC_SCHOOL_INFO).set(SchoolSettings())
-        } catch (e: Exception) {
-            Log.w(TAG, "Initial seed to Firestore: ${e.message}")
-        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(Exception(friendlyError(e), e))
     }
 }

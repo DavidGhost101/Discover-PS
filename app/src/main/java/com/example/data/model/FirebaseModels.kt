@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import com.google.firebase.Timestamp
+import com.google.firebase.firestore.Exclude
 import com.google.firebase.firestore.IgnoreExtraProperties
 
 /**
@@ -15,7 +16,7 @@ enum class UserRole {
 
     companion object {
         fun fromString(role: String?): UserRole? {
-            return when (role?.uppercase()) {
+            return when (role?.trim()?.uppercase()) {
                 "ADMIN" -> ADMIN
                 "TEACHER" -> TEACHER
                 "STUDENT" -> STUDENT
@@ -27,8 +28,16 @@ enum class UserRole {
     }
 }
 
+/** Audiences a notice can target. "ALL" reaches every active member of the school. */
+object NoticeAudience {
+    const val ALL = "ALL"
+    val adminChoices = listOf(ALL, UserRole.PARENT.name, UserRole.TEACHER.name, UserRole.STUDENT.name, UserRole.STAFF.name)
+    val teacherChoices = listOf(UserRole.PARENT.name, UserRole.STUDENT.name)
+}
+
 /**
- * Authenticated User Document in Firestore (/users/{uid})
+ * Authenticated User Document in Firestore (/users/{uid}).
+ * Only an administrator may change role, schoolId or active (enforced by firestore.rules).
  */
 @IgnoreExtraProperties
 data class User(
@@ -36,24 +45,30 @@ data class User(
     val email: String = "",
     val phoneNumber: String = "",
     val displayName: String = "",
-    val role: String = UserRole.STUDENT.name,
-    val schoolId: String = "discovery-primary",
-    val active: Boolean = true,
+    val role: String = UserRole.PARENT.name,
+    val schoolId: String = SCHOOL_ID,
+    val active: Boolean = false,
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 ) {
+    @get:Exclude
     val userRole: UserRole?
         get() = UserRole.fromString(role)
+
+    @get:Exclude
+    val label: String
+        get() = displayName.ifBlank { email.ifBlank { phoneNumber.ifBlank { uid } } }
 }
 
 /**
- * Teacher Entity in Firestore (/teachers/{uid})
+ * Teacher Entity in Firestore (/teachers/{uid}). The document id is the teacher's
+ * Firebase Auth uid; classIds is the authoritative list used by the security rules.
  */
 @IgnoreExtraProperties
 data class Teacher(
     val uid: String = "",
     val userId: String = "",
-    val schoolId: String = "discovery-primary",
+    val schoolId: String = SCHOOL_ID,
     val employeeNumber: String = "",
     val firstName: String = "",
     val lastName: String = "",
@@ -64,18 +79,20 @@ data class Teacher(
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 ) {
+    @get:Exclude
     val name: String
-        get() = "$firstName $lastName".trim().ifBlank { if (email.isNotBlank()) email.substringBefore("@") else "Teacher" }
+        get() = "$firstName $lastName".trim().ifBlank { email.ifBlank { "Unnamed teacher" } }
 }
 
 /**
- * Student Entity in Firestore (/students/{studentId})
+ * Student Entity in Firestore (/students/{studentId}).
+ * userId links the learner's own login (optional); parentIds lists the linked parent uids.
  */
 @IgnoreExtraProperties
 data class Student(
     val uid: String = "",
     val userId: String = "",
-    val schoolId: String = "discovery-primary",
+    val schoolId: String = SCHOOL_ID,
     val studentNumber: String = "",
     val firstName: String = "",
     val lastName: String = "",
@@ -86,8 +103,9 @@ data class Student(
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 ) {
+    @get:Exclude
     val fullName: String
-        get() = "$firstName $lastName".trim().ifBlank { studentNumber.ifBlank { "Student" } }
+        get() = "$firstName $lastName".trim().ifBlank { studentNumber.ifBlank { "Unnamed learner" } }
 }
 
 /**
@@ -96,7 +114,7 @@ data class Student(
 @IgnoreExtraProperties
 data class SchoolClass(
     val id: String = "",
-    val schoolId: String = "discovery-primary",
+    val schoolId: String = SCHOOL_ID,
     val name: String = "",
     val grade: String = "",
     val teacherIds: List<String> = emptyList(),
@@ -111,7 +129,7 @@ data class SchoolClass(
 @IgnoreExtraProperties
 data class Subject(
     val id: String = "",
-    val schoolId: String = "discovery-primary",
+    val schoolId: String = SCHOOL_ID,
     val name: String = "",
     val code: String = "",
     val teacherIds: List<String> = emptyList(),
@@ -125,7 +143,7 @@ data class Subject(
 @IgnoreExtraProperties
 data class Assignment(
     val id: String = "",
-    val schoolId: String = "discovery-primary",
+    val schoolId: String = SCHOOL_ID,
     val classId: String = "",
     val subjectId: String = "",
     val teacherId: String = "",
@@ -137,17 +155,19 @@ data class Assignment(
 )
 
 /**
- * School Notice Entity in Firestore (/notices/{noticeId})
+ * School Notice Entity in Firestore (/notices/{noticeId}).
+ * targetRole is a [UserRole] name or "ALL"; a non-blank classId narrows it to one class.
  */
 @IgnoreExtraProperties
 data class Notice(
     val id: String = "",
-    val schoolId: String = "discovery-primary",
+    val schoolId: String = SCHOOL_ID,
     val authorId: String = "",
     val title: String = "",
     val message: String = "",
-    val targetRole: String = "",
-    val published: Boolean = false,
+    val targetRole: String = NoticeAudience.ALL,
+    val classId: String = "",
+    val published: Boolean = true,
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 )
@@ -158,12 +178,14 @@ data class Notice(
 @IgnoreExtraProperties
 data class SchoolSettings(
     val schoolName: String = "Discovery Primary School",
-    val emisNumber: String = "700140223",
-    val district: String = "Johannesburg West (D12)",
-    val province: String = "Gauteng",
-    val principalName: String = "Mr. Raymond Peters",
-    val contactEmail: String = "admin@discoveryprimary.co.za",
-    val contactPhone: String = "011 672 1422",
-    val academicTerm: String = "Term 3, 2026",
-    val schoolId: String = "discovery-primary"
+    val emisNumber: String = "",
+    val district: String = "",
+    val province: String = "",
+    val principalName: String = "",
+    val contactEmail: String = "",
+    val contactPhone: String = "",
+    val academicTerm: String = "",
+    val schoolId: String = SCHOOL_ID
 )
+
+const val SCHOOL_ID = "discovery-primary"
