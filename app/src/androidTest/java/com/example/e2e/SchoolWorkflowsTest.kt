@@ -111,6 +111,13 @@ class SchoolWorkflowsTest {
 
     private fun openTab(name: String) = click("tab_$name")
 
+    /** Picks a dropdown option by its id-based test tag (unambiguous, unlike visible text). */
+    private fun chooseOption(selectTag: String, optionId: String) {
+        click(selectTag)
+        waitForTag("${selectTag}_option_$optionId")
+        tag("${selectTag}_option_$optionId").performClick()
+    }
+
     private fun choose(selectTag: String, optionText: String) {
         click(selectTag)
         waitForText(optionText)
@@ -182,12 +189,12 @@ class SchoolWorkflowsTest {
         openTab("notices")
         click("admin_add_notice_button")
         type("notice_title_input", "Parents meeting"); type("notice_message_input", "Friday 18:00 in the hall")
-        choose("notice_audience_select", "Parents")
+        chooseOption("notice_audience_select", "PARENT")
         submitForm()
         waitForText("Parents meeting")
         click("admin_add_notice_button")
         type("notice_title_input", "Staff briefing"); type("notice_message_input", "Monday 07:30")
-        choose("notice_audience_select", "Teachers")
+        chooseOption("notice_audience_select", "TEACHER")
         submitForm()
         waitForText("Staff briefing")
 
