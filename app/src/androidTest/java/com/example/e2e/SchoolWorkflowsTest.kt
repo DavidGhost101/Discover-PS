@@ -109,7 +109,7 @@ class SchoolWorkflowsTest {
         waitForTag("login_email_input")
     }
 
-    private fun openTab(name: String) = tag("tab_$name").performClick()
+    private fun openTab(name: String) = click("tab_$name")
 
     private fun choose(selectTag: String, optionText: String) {
         click(selectTag)
@@ -289,6 +289,8 @@ class SchoolWorkflowsTest {
         click("register_submit_button")
 
         waitForTag("verify_email_screen")
+        // Registration finishes (profile written, verification email sent) before actions unlock.
+        waitForText("Account created. Check your inbox")
         click("verify_email_check_button")
         waitForText("Your email address is not verified yet.")
 
