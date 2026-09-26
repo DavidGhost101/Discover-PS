@@ -26,6 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # Repository secret FIREBASE_WEB_CONFIG: the firebaseConfig JSON of the Firebase web app,
+      # e.g. {"apiKey":"...","authDomain":"...","projectId":"...","appId":"..."}.
+      # Without it the site shows its setup screen.
+      - name: Add Firebase web config
+        env:
+          FIREBASE_WEB_CONFIG: ${{ secrets.FIREBASE_WEB_CONFIG }}
+        if: env.FIREBASE_WEB_CONFIG != ''
+        run: printf 'window.DISCOVER_PS_FIREBASE_CONFIG = %s;\n' "$FIREBASE_WEB_CONFIG" > web/firebase-config.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web

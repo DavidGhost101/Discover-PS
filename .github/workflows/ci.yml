@@ -76,6 +76,14 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      # Optional: repository secret GOOGLE_SERVICES_JSON (contents of app/google-services.json)
+      # makes the uploaded APK talk to the school's Firebase project. Without it the APK
+      # still builds and shows "Firebase is not configured".
+      - name: Add Firebase config for the downloadable APK
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        if: env.GOOGLE_SERVICES_JSON != ''
+        run: printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
       - name: Build debug APK and instrumented tests
         run: ./gradlew --no-configuration-cache :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Unit tests
