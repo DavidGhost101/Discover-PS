@@ -1,0 +1,6 @@
+{
+  "name": "Discovery Primary",
+  "description": "Smart School LMS, Learner Management, Parent Engagement & School Operations Platform for Discovery Primary School",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
