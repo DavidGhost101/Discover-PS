@@ -193,13 +193,13 @@ class SchoolWorkflowsTest {
 
         // Dashboard numbers come from Firestore.
         openTab("dashboard")
-        compose.waitUntil(30_000) {
-            compose.onAllNodes(hasTestTag("stat_students_value") and hasText("2")).fetchSemanticsNodes().isNotEmpty()
-        }
-        tag("stat_teachers_value").assertExists()
-        compose.onNode(hasTestTag("stat_teachers_value") and hasText("1")).assertExists()
-        compose.onNode(hasTestTag("stat_classes_value") and hasText("2")).assertExists()
-        compose.onNode(hasTestTag("stat_notices_value") and hasText("2")).assertExists()
+        // Stat values live inside clickable cards (merged semantics), so query the unmerged tree.
+        fun stat(name: String, value: String) = hasTestTag("stat_${name}_value") and hasText(value)
+        compose.waitUntil(30_000) { compose.onAllNodes(stat("students", "2"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(stat("teachers", "1"), useUnmergedTree = true).assertExists()
+        compose.onNode(stat("classes", "2"), useUnmergedTree = true).assertExists()
+        compose.onNode(stat("notices", "2"), useUnmergedTree = true).assertExists()
+        compose.onNode(stat("parents", "1"), useUnmergedTree = true).assertExists()
         signOut()
 
         // TEACHER sets a password from the emailed link and signs in.
