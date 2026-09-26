@@ -18,3 +18,5 @@ local.properties
 debug.keystore
 node_modules
 *-debug.log
+test-results/
+playwright-report/
