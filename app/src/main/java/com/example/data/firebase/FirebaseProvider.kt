@@ -50,6 +50,7 @@ object FirebaseProvider {
      */
     @Synchronized
     fun initForEmulator(context: Context, host: String, projectId: String = "demo-discovery-primary") {
+        if (emulatorHost == host) return
         if (FirebaseApp.getApps(context).isEmpty()) {
             val options = FirebaseOptions.Builder()
                 .setProjectId(projectId)
