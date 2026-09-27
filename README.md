@@ -37,7 +37,10 @@ receive an email with a link to set their own password.
 5. **Website** – in the Firebase console add a *Web app*, copy `web/firebase-config.example.js`
    to `web/firebase-config.js` and paste its config (these values are public identifiers, not
    secrets). Then publish it, either:
-   - Firebase Hosting: `npx firebase-tools deploy --only hosting,firestore:rules --project <your-project-id>`
+   - Firebase Hosting: `npx firebase-tools deploy --only hosting,firestore:rules --project <your-project-id>`,
+     or automatically from GitHub: add the repository secrets `FIREBASE_PROJECT_ID`,
+     `FIREBASE_SERVICE_ACCOUNT` (service account JSON key with the *Firebase Admin* role) and
+     `FIREBASE_WEB_CONFIG`; every push to `main` then runs `.github/workflows/firebase-hosting.yml`
      → `https://<your-project-id>.web.app`, or
    - GitHub Pages: *Settings → Pages → Source: GitHub Actions*; every push to `main` runs
      `.github/workflows/pages.yml` → `https://<owner>.github.io/<repo>/`. Add that domain under
