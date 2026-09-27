@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.Assignment
 import com.example.data.model.Notice
 import com.example.data.model.NoticeAudience
+import com.example.data.model.OWNER_ROLE
 import com.example.data.model.SchoolClass
 import com.example.data.model.SchoolSettings
 import com.example.data.model.Student
@@ -408,7 +409,9 @@ private fun EditUserDialog(user: User, me: User, state: SchoolState, viewModel: 
         if (isMe) {
             Text("You cannot change your own role or deactivate yourself.", fontSize = 11.sp, color = SchoolSlate)
         } else {
-            DropdownSelector("Role", FormValidation.assignableRoles.map { Choice(it.name, it.name) }, role, { role = it }, "edit_user_role_select")
+            val roleChoices = (if (user.isProtectedOwner) listOf(Choice(OWNER_ROLE, "$OWNER_ROLE (protected)")) else emptyList()) +
+                FormValidation.assignableRoles.map { Choice(it.name, it.name) }
+            DropdownSelector("Role", roleChoices, role, { role = it }, "edit_user_role_select")
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { active = !active }.testTag("edit_user_active_toggle")) {
                 Checkbox(checked = active, onCheckedChange = { active = it })
                 Text(if (user.active) "Account active" else "Approve / activate account", fontSize = 13.sp)

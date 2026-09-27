@@ -156,3 +156,5 @@ button, input, select, textarea { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; }
 }
+
+.audit-type { font-size: 0.95rem; overflow-wrap: anywhere; margin: 0 0 4px; }

@@ -504,7 +504,8 @@ function editUserDialog(u, me) {
   const classes = byId(s.classes.items);
   const name = field('Display name', { value: u.displayName, testid: 'edit-user-name', validate: (v) => A.validate.required(v, 'Name') });
   const phone = field('Phone', { value: u.phoneNumber, type: 'tel', testid: 'edit-user-phone', validate: A.validate.phone });
-  const role = select('Role', A.ROLES.map((r) => ({ id: r, label: r })), { value: u.role, testid: 'edit-user-role' });
+  const roleChoices = (A.isOwner(u) ? [{ id: A.OWNER_ROLE, label: `${A.OWNER_ROLE} (protected)` }] : []).concat(A.ROLES.map((r) => ({ id: r, label: r })));
+  const role = select('Role', roleChoices, { value: u.role, testid: 'edit-user-role' });
   const active = checkbox(u.active ? 'Account active' : 'Approve / activate account', u.active, 'edit-user-active');
   openForm({
     title: `Manage ${A.userLabel(u)}`,
@@ -803,7 +804,8 @@ function ownerSecurity() {
   }), { variant: 'danger', small: true, testid: 'owner-revoke-sessions' }),
   text('p', 'muted small', 'Your password is managed only by Firebase Authentication. To change it, use "Change password" on your profile or "Forgot password" on the sign-in page.'),
   remoteList(logs, logs.items, 'No security events recorded yet.', (e) => card(
-    el('div', { class: 'card-head' }, text('h3', '', e.type ?? 'EVENT'), text('span', 'muted small', A.formatDateTime(e.at))),
+    text('h3', 'audit-type', e.type ?? 'EVENT'),
+    text('div', 'muted small', A.formatDateTime(e.at)),
     text('div', 'muted small', describe(e)),
   )));
 }
