@@ -4,53 +4,50 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Assignment
-import androidx.compose.material.icons.filled.Campaign
-import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.FamilyRestroom
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.Student
 import com.example.data.model.User
-import com.example.ui.theme.DiscoveryGold
-import com.example.ui.theme.DiscoveryGreen
-import com.example.ui.theme.DiscoveryGreenDark
+import com.example.data.model.UserRole
+import com.example.domain.SchoolAccess
+import com.example.ui.components.Choice
+import com.example.ui.components.ChoiceChips
+import com.example.ui.components.EmptyState
+import com.example.ui.components.ErrorState
+import com.example.ui.components.InfoCard
+import com.example.ui.components.LabeledValue
+import com.example.ui.components.LoadingState
+import com.example.ui.components.PortalHeader
+import com.example.ui.components.PortalTabs
+import com.example.ui.components.ProfileCard
+import com.example.ui.components.RemoteContent
+import com.example.ui.components.SectionTitle
+import com.example.ui.components.StatusBanner
 import com.example.ui.theme.SchoolSlate
 import com.example.ui.viewmodel.ParentTab
 import com.example.ui.viewmodel.SchoolAuthViewModel
+import com.example.ui.viewmodel.SchoolState
+
+private val ParentPurple = Color(0xFF7C3AED)
 
 @Composable
 fun ParentDashboardScreen(
@@ -59,154 +56,148 @@ fun ParentDashboardScreen(
     modifier: Modifier = Modifier
 ) {
     val currentTab by viewModel.parentTab.collectAsState()
-    val students by viewModel.students.collectAsState()
-    val assignments by viewModel.assignments.collectAsState()
-    val notices by viewModel.notices.collectAsState()
+    val statusMsg by viewModel.statusMessage.collectAsState()
+    val state by viewModel.school.collectAsState()
 
-    val myLearner = students.firstOrNull()
+    // The query already returns only this parent's children; filtering again keeps the UI
+    // correct even if cached data from another session were ever present.
+    val children = SchoolAccess.childrenOf(user.uid, state.students.items)
+    var selectedChildId by rememberSaveable { mutableStateOf("") }
+    val selectedChild = children.firstOrNull { it.uid == selectedChildId } ?: children.firstOrNull()
+
+    Column(modifier = modifier.fillMaxSize().background(Color(0xFFF8F9FA))) {
+        PortalHeader(
+            title = "Parent Portal",
+            badge = "PARENT",
+            badgeColor = ParentPurple,
+            subtitle = "${user.label} • Guardian",
+            icon = Icons.Default.FamilyRestroom,
+            onSignOut = { viewModel.signOut() }
+        )
+        StatusBanner(statusMsg) { viewModel.clearStatusMessage() }
+        PortalTabs(ParentTab.entries, currentTab, { it.title }) { viewModel.setParentTab(it) }
+
+        if (children.size > 1 && currentTab != ParentTab.PROFILE && currentTab != ParentTab.NOTICES) {
+            Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp)) {
+                ChoiceChips(children.map { Choice(it.uid, it.fullName) }, selectedChild?.uid.orEmpty(), { selectedChildId = it }, "child_selector")
+            }
+        }
+
+        Box(modifier = Modifier.fillMaxSize().weight(1f)) {
+            when (currentTab) {
+                ParentTab.LEARNER -> ChildrenGate(state, children) { ChildProfile(state, selectedChild!!) }
+                ParentTab.HOMEWORK -> ChildrenGate(state, children) { ChildHomework(state, selectedChild!!) }
+                ParentTab.NOTICES -> ParentNotices(state, user, children)
+                ParentTab.PROFILE -> {
+                    val saving by viewModel.saving.collectAsState()
+                    val error by viewModel.formError.collectAsState()
+                    ProfileCard(
+                        name = user.displayName,
+                        email = user.email,
+                        phone = user.phoneNumber,
+                        roleLabel = "PARENT",
+                        accent = ParentPurple,
+                        saving = saving,
+                        error = error,
+                        details = listOf("Linked children" to children.joinToString { it.fullName }.ifBlank { "None yet" }),
+                        onSave = { name, phone, done -> viewModel.updateOwnProfile(name, phone, done) },
+                        onResetPassword = { viewModel.sendMyPasswordReset() },
+                        onSignOut = { viewModel.signOut() }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChildrenGate(state: SchoolState, children: List<Student>, content: @Composable () -> Unit) {
+    when {
+        state.students.error != null -> Column(Modifier.padding(16.dp)) { ErrorState(state.students.error) }
+        state.students.loading -> LoadingState()
+        children.isEmpty() -> EmptyState(
+            "No learners are linked to your account yet. The school administrator links parents to their children.",
+            Modifier.padding(16.dp)
+        )
+        else -> content()
+    }
+}
+
+@Composable
+private fun ChildProfile(state: SchoolState, child: Student) {
+    val cls = state.classes.items.firstOrNull { it.id == child.classId }
+    val educators = SchoolAccess.teachersOfClass(child.classId, state.teachers.items)
+    val subjects = state.subjects.items.filter { cls != null && it.id in cls.subjectIds }
+    val homework = SchoolAccess.assignmentsForClasses(state.assignments.items, setOf(child.classId))
+    val open = homework.count { SchoolAccess.dueStatus(it.dueDate?.toDate()) != SchoolAccess.DueStatus.OVERDUE }
 
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFFF8F9FA))
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Parent Header
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(DiscoveryGreenDark)
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF7C3AED).copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.FamilyRestroom, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
-                    }
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Parent Portal", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            Box(
-                                modifier = Modifier
-                                    .background(Color(0xFF7C3AED), RoundedCornerShape(4.dp))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text("PARENT", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            }
-                        }
-                        Text(user.displayName.ifBlank { "Mr. Bongani Dlamini" } + " • Guardian", fontSize = 11.sp, color = Color.White.copy(alpha = 0.85f))
-                    }
-                }
+        SectionTitle("Learner Profile")
+        InfoCard {
+            Text(child.fullName, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.testTag("child_name"))
+            LabeledValue("Admission number", child.studentNumber)
+            LabeledValue("Class", cls?.name ?: "Not assigned")
+            LabeledValue("Grade", cls?.grade.orEmpty())
+        }
+        InfoCard {
+            Text("Class educators", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            if (educators.isEmpty()) Text("No teacher assigned yet.", fontSize = 12.sp, color = SchoolSlate)
+            educators.forEach { t ->
+                Text(t.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.testTag("child_teacher"))
+                val contact = listOf(t.email, t.phoneNumber).filter { it.isNotBlank() }.joinToString(" • ")
+                if (contact.isNotBlank()) Text(contact, fontSize = 11.sp, color = SchoolSlate)
+            }
+        }
+        InfoCard {
+            Text("Subjects", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(subjects.joinToString { it.name }.ifBlank { "No subjects listed for this class yet." }, fontSize = 12.sp, color = SchoolSlate)
+        }
+        InfoCard {
+            Text("Homework", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text("${homework.size} assignment(s) for ${cls?.name ?: "this class"}; $open not past due.", fontSize = 12.sp, color = SchoolSlate)
+        }
+        state.settings.items.firstOrNull()?.let { s ->
+            InfoCard {
+                Text(s.schoolName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                if (s.academicTerm.isNotBlank()) LabeledValue("Term", s.academicTerm)
+                if (s.contactPhone.isNotBlank()) LabeledValue("School phone", s.contactPhone)
+                if (s.contactEmail.isNotBlank()) LabeledValue("School email", s.contactEmail)
+            }
+        }
+    }
+}
 
-                IconButton(onClick = { viewModel.signOut() }) {
-                    Icon(Icons.Default.ExitToApp, contentDescription = "Sign Out", tint = Color.White)
+@Composable
+private fun ChildHomework(state: SchoolState, child: Student) {
+    val homework = SchoolAccess.assignmentsForClasses(state.assignments.items, setOf(child.classId))
+    val classesById = state.classes.items.associateBy { it.id }
+    val subjectsById = state.subjects.items.associateBy { it.id }
+    val teachersById = state.teachers.items.associateBy { it.uid }
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SectionTitle("${child.firstName.ifBlank { child.fullName }}'s Homework & Tasks")
+        RemoteContent(state.assignments, "No assignments for ${classesById[child.classId]?.name ?: "this class"} yet.", homework) { list ->
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(list, key = { it.id }) { a ->
+                    AssignmentCard(a, classesById[a.classId]?.name, subjectsById[a.subjectId]?.name, teachersById[a.teacherId]?.name)
                 }
             }
         }
+    }
+}
 
-        // Parent Tabs
-        ScrollableTabRow(
-            selectedTabIndex = currentTab.ordinal,
-            containerColor = Color.White,
-            contentColor = DiscoveryGreen
-        ) {
-            ParentTab.values().forEach { tab ->
-                Tab(
-                    selected = currentTab == tab,
-                    onClick = { viewModel.setParentTab(tab) },
-                    text = {
-                        Text(
-                            text = tab.title,
-                            fontWeight = if (currentTab == tab) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
-                        )
-                    }
-                )
-            }
-        }
-
-        // Tab Content
-        Box(modifier = Modifier.fillMaxSize().weight(1f).padding(16.dp)) {
-            when (currentTab) {
-                ParentTab.LEARNER -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Enrolled Dependent Learner", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
-
-                        Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(myLearner?.fullName ?: "Siyabonga Dlamini", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text("Student Admission: ${myLearner?.studentNumber ?: "DPS-4012"}", fontSize = 12.sp, color = SchoolSlate)
-                                Text("Current Class: Grade 4A • Room 14", fontSize = 12.sp, color = Color(0xFF2563EB), fontWeight = FontWeight.Medium)
-                                Text("Class Educator: Mrs. N. Khumalo (082 555 4102)", fontSize = 12.sp, color = Color(0xFF334155))
-                            }
-                        }
-                    }
-                }
-                ParentTab.HOMEWORK -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Child's Homework & Project Tasks", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(assignments) { ass ->
-                                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
-                                        Text(ass.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = DiscoveryGreen)
-                                        Text(ass.description, fontSize = 11.sp, color = Color(0xFF334155))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                ParentTab.NOTICES -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("School & SGB Notices for Parents", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DiscoveryGreen)
-                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(notices) { not ->
-                                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
-                                        Text(not.title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                        Text(not.message, fontSize = 11.sp, color = SchoolSlate)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                ParentTab.PROFILE -> {
-                    Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Box(modifier = Modifier.size(56.dp).clip(CircleShape).background(Color(0xFF7C3AED)), contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
-                                }
-                                Text(user.displayName.ifBlank { "Mr. Bongani Dlamini" }, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                Text(user.email.ifBlank { "parent.dlamini@discoveryprimary.co.za" }, fontSize = 11.sp, color = SchoolSlate)
-                                Text("Registered Contact: +27 82 123 4567", fontSize = 11.sp, color = Color(0xFF7C3AED), fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-
-                        Button(
-                            onClick = { viewModel.signOut() },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Sign Out", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
+@Composable
+private fun ParentNotices(state: SchoolState, user: User, children: List<Student>) {
+    val classIds = children.map { it.classId }.toSet()
+    val notices = SchoolAccess.visibleNotices(state.notices.items, UserRole.PARENT, user.uid, classIds)
+    val classesById = state.classes.items.associateBy { it.id }
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SectionTitle("School & Class Notices")
+        RemoteContent(state.notices, "No notices for parents right now.", notices) { list ->
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(list, key = { it.id }) { n -> NoticeCard(n, classesById[n.classId]?.name, showAudience = false) }
             }
         }
     }

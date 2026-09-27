@@ -1,94 +1,212 @@
 rules_version = '2';
 
+// Discovery Primary LMS security rules.
+//
+// Authorization is decided here, never by the app:
+//  * The caller's role, school and active flag come from /users/{uid}, which only
+//    an ADMIN can create or change (apart from a pending self-registration and a
+//    user's own display name / phone number).
+//  * Teachers only reach students in the classes listed on /teachers/{uid}.classIds.
+//  * Parents only reach students whose parentIds contain their uid.
+//  * Students only reach the student record whose userId is their uid.
+//  * Deactivated or pending accounts (active == false) can read nothing but their
+//    own /users document.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ---------- identity helpers ----------
 
     function signedIn() {
       return request.auth != null;
     }
 
-    function currentUser() {
-      return get(
-        /databases/$(database)/documents/users/$(request.auth.uid)
-      );
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
     }
 
-    function isAdmin() {
-      return signedIn()
-        && currentUser().data.role == "ADMIN";
+    function me() {
+      return get(userPath()).data;
     }
 
-    function isTeacher() {
-      return signedIn()
-        && currentUser().data.role == "TEACHER";
+    function isActive() {
+      return signedIn() && exists(userPath()) && me().active == true;
     }
 
-    function sameSchool(schoolId) {
-      return signedIn()
-        && currentUser().data.schoolId == schoolId;
+    function hasRole(r) {
+      return isActive() && me().role == r;
+    }
+
+    function isAdmin()   { return hasRole('ADMIN'); }
+    function isTeacher() { return hasRole('TEACHER'); }
+    function isParent()  { return hasRole('PARENT'); }
+    function isStudent() { return hasRole('STUDENT'); }
+
+    function inMySchool(data) {
+      return data.schoolId == me().schoolId;
+    }
+
+    function teacherClassIds() {
+      let path = /databases/$(database)/documents/teachers/$(request.auth.uid);
+      return exists(path) ? get(path).data.classIds : [];
+    }
+
+    function validRole(r) {
+      return r in ['ADMIN', 'TEACHER', 'STUDENT', 'PARENT', 'STAFF'];
+    }
+
+    // ---------- users ----------
+
+    function userKeys() {
+      return ['uid', 'email', 'phoneNumber', 'displayName', 'role', 'schoolId',
+              'active', 'createdAt', 'updatedAt'];
+    }
+
+    function validUser(uid, d) {
+      return d.keys().hasOnly(userKeys())
+        && d.uid == uid
+        && validRole(d.role)
+        && d.active is bool
+        && d.displayName is string
+        && d.displayName.size() <= 100;
+    }
+
+    // A self-registered account is always a PARENT and starts inactive until an
+    // administrator approves it, so registering grants no data access by itself.
+    function validSelfRegistration(uid, d) {
+      return validUser(uid, d)
+        && d.role == 'PARENT'
+        && d.active == false
+        && d.schoolId == 'discovery-primary'
+        && d.email == request.auth.token.get('email', '');
     }
 
     match /users/{uid} {
-      allow read: if signedIn()
-        && (
-          request.auth.uid == uid
-          || isAdmin()
-        );
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow read: if isAdmin();
 
-      allow create: if isAdmin()
-        || (signedIn() && request.auth.uid == uid && request.resource.data.role != "ADMIN");
+      allow create: if (isAdmin() && validUser(uid, request.resource.data) && inMySchool(request.resource.data))
+        || (signedIn() && request.auth.uid == uid && validSelfRegistration(uid, request.resource.data));
 
-      allow update: if isAdmin()
+      allow update: if (isAdmin() && validUser(uid, request.resource.data) && inMySchool(request.resource.data))
         || (
-          request.auth.uid == uid
-          && request.resource.data.role == resource.data.role
-          && request.resource.data.schoolId == resource.data.schoolId
+          signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['displayName', 'phoneNumber', 'updatedAt'])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 100
         );
 
       allow delete: if isAdmin();
     }
 
-    match /teachers/{teacherId} {
-      allow read: if signedIn()
-        && sameSchool(resource.data.schoolId);
-      allow write: if isAdmin();
-    }
+    // ---------- school structure (admin managed, readable by active members) ----------
 
-    match /students/{studentId} {
-      allow read: if signedIn()
-        && sameSchool(resource.data.schoolId);
-      allow write: if isAdmin();
+    match /teachers/{teacherId} {
+      allow read: if isActive() && inMySchool(resource.data);
+      allow create, update: if isAdmin() && inMySchool(request.resource.data);
+      allow delete: if isAdmin() && inMySchool(resource.data);
     }
 
     match /classes/{classId} {
-      allow read: if signedIn()
-        && sameSchool(resource.data.schoolId);
-      allow write: if isAdmin();
+      allow read: if isActive() && inMySchool(resource.data);
+      allow create, update: if isAdmin() && inMySchool(request.resource.data);
+      allow delete: if isAdmin() && inMySchool(resource.data);
     }
 
     match /subjects/{subjectId} {
-      allow read: if signedIn()
-        && sameSchool(resource.data.schoolId);
-      allow write: if isAdmin();
-    }
-
-    match /assignments/{assignmentId} {
-      allow read: if signedIn()
-        && sameSchool(resource.data.schoolId);
-      allow create, update, delete: if (isAdmin() || isTeacher())
-        && sameSchool(request.resource.data.schoolId);
-    }
-
-    match /notices/{noticeId} {
-      allow read: if signedIn()
-        && sameSchool(resource.data.schoolId);
-      allow create, update, delete: if isAdmin()
-        || isTeacher();
+      allow read: if isActive() && inMySchool(resource.data);
+      allow create, update: if isAdmin() && inMySchool(request.resource.data);
+      allow delete: if isAdmin() && inMySchool(resource.data);
     }
 
     match /settings/{docId} {
-      allow read: if signedIn();
+      allow read: if isActive();
       allow write: if isAdmin();
+    }
+
+    // ---------- students (relationship scoped) ----------
+
+    match /students/{studentId} {
+      allow read: if (isAdmin() && inMySchool(resource.data))
+        || (isTeacher() && inMySchool(resource.data) && resource.data.classId in teacherClassIds())
+        || (isParent() && request.auth.uid in resource.data.parentIds)
+        || (isStudent() && resource.data.userId == request.auth.uid);
+
+      allow create, update: if isAdmin()
+        && inMySchool(request.resource.data)
+        && request.resource.data.parentIds is list;
+      allow delete: if isAdmin() && inMySchool(resource.data);
+    }
+
+    // ---------- assignments ----------
+
+    function validAssignment(d) {
+      return d.title is string && d.title.size() > 0 && d.title.size() <= 200
+        && d.classId is string && d.classId.size() > 0;
+    }
+
+    function teacherOwnsAssignment(d) {
+      return d.teacherId == request.auth.uid && d.classId in teacherClassIds();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isActive() && inMySchool(resource.data);
+
+      allow create: if validAssignment(request.resource.data) && (
+        (isAdmin() && inMySchool(request.resource.data))
+        || (isTeacher() && inMySchool(request.resource.data) && teacherOwnsAssignment(request.resource.data))
+      );
+
+      allow update: if validAssignment(request.resource.data) && (
+        (isAdmin() && inMySchool(request.resource.data))
+        || (isTeacher()
+            && resource.data.teacherId == request.auth.uid
+            && inMySchool(request.resource.data)
+            && teacherOwnsAssignment(request.resource.data))
+      );
+
+      allow delete: if (isAdmin() && inMySchool(resource.data))
+        || (isTeacher() && resource.data.teacherId == request.auth.uid);
+    }
+
+    // ---------- notices ----------
+
+    function validNotice(d) {
+      return d.title is string && d.title.size() > 0 && d.title.size() <= 200
+        && d.message is string && d.message.size() > 0
+        && d.targetRole in ['ALL', 'ADMIN', 'TEACHER', 'STUDENT', 'PARENT', 'STAFF']
+        && d.published is bool
+        && d.classId is string;
+    }
+
+    function teacherNotice(d) {
+      return d.authorId == request.auth.uid
+        && d.targetRole in ['STUDENT', 'PARENT']
+        && d.classId in teacherClassIds();
+    }
+
+    match /notices/{noticeId} {
+      allow read: if (isAdmin() && inMySchool(resource.data))
+        || (isActive() && inMySchool(resource.data) && resource.data.authorId == request.auth.uid)
+        || (isActive()
+            && inMySchool(resource.data)
+            && resource.data.published == true
+            && resource.data.targetRole in ['ALL', me().role]);
+
+      allow create: if validNotice(request.resource.data) && inMySchool(request.resource.data) && (
+        (isAdmin() && request.resource.data.authorId == request.auth.uid)
+        || (isTeacher() && teacherNotice(request.resource.data))
+      );
+
+      allow update: if validNotice(request.resource.data) && inMySchool(request.resource.data) && (
+        isAdmin()
+        || (isTeacher() && resource.data.authorId == request.auth.uid && teacherNotice(request.resource.data))
+      );
+
+      allow delete: if (isAdmin() && inMySchool(resource.data))
+        || (isTeacher() && resource.data.authorId == request.auth.uid);
     }
   }
 }
