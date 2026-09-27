@@ -8,6 +8,7 @@ import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.functions.FirebaseFunctionsException
 
 /** Turns Firebase exceptions into messages that are safe and useful to show users. */
 fun friendlyError(e: Throwable?): String = when (e) {
@@ -25,6 +26,13 @@ fun friendlyError(e: Throwable?): String = when (e) {
         FirebaseFirestoreException.Code.NOT_FOUND -> "The record no longer exists."
         FirebaseFirestoreException.Code.UNAUTHENTICATED -> "Your session has expired. Please sign in again."
         else -> "Database error: ${e.message}"
+    }
+    is FirebaseFunctionsException -> when (e.code) {
+        FirebaseFunctionsException.Code.PERMISSION_DENIED ->
+            "403 FORBIDDEN — " + (e.message?.replace(Regex("\\s*\\[\\d{3}]$"), "") ?: "Access denied.")
+        FirebaseFunctionsException.Code.NOT_FOUND, FirebaseFunctionsException.Code.UNAVAILABLE, FirebaseFunctionsException.Code.INTERNAL ->
+            "The school's server functions are not reachable. An administrator must deploy Cloud Functions."
+        else -> e.message ?: "Server error."
     }
     is IllegalArgumentException -> e.message ?: "Invalid input."
     is IllegalStateException -> e.message ?: "Something went wrong. Please try again."

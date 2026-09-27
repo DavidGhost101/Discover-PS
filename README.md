@@ -15,6 +15,7 @@ same `firestore.rules`, so anything done on the website shows up in the app and 
 | PARENT | Self-registration (pending until an admin approves) or Admin → Students → "+ Parent account" | Only linked children, their class, teachers, homework; parent notices |
 | STUDENT | Admin → Students → "+ Learner login" | Own record, class subjects, homework, student notices |
 | STAFF | Admin → Users & Parents → Create Account | Staff directory and staff notices |
+| SUPER_ADMIN_OWNER | Only server-side, by the owner set-up script (below) | Everything an ADMIN sees, plus the Owner security log and "Sign out all devices"; cannot be changed, suspended, demoted or deleted by any administrator |
 
 Access is enforced by `firestore.rules`, not by the app. Accounts created by an admin
 receive an email with a link to set their own password.
@@ -48,6 +49,50 @@ receive an email with a link to set their own password.
 6. Release signing (optional): set `KEYSTORE_PATH`, `STORE_PASSWORD`, `KEY_PASSWORD`.
    Keystores and `.env` files are git-ignored; never commit them.
 
+## Protected Super Admin Owner account
+
+The Owner is an ordinary Firebase Authentication login (email + password, normal password
+reset) that receives the role through a **server-side** mechanism only:
+
+* `functions/scripts/provision-owner.mjs` (Firebase Admin SDK) creates or updates the login,
+  sets the custom claims `{role: "SUPER_ADMIN_OWNER", owner: true}` and writes the
+  `/users/{uid}` profile. Clients can set neither, so nobody can make themselves Owner, and a
+  profile or claim alone grants nothing (`firestore.rules` require both).
+* The password is read only from the `SUPER_ADMIN_PASSWORD` environment variable/secret and
+  handed straight to Firebase Authentication (stored hashed there). It is never written to
+  source code, Firestore, logs, API responses or the UI. It is optional: without it the
+  Owner uses "Forgot password" on the sign-in page to choose one.
+* Changing, suspending, demoting or deleting the Owner is refused by `firestore.rules` for
+  direct writes and by the Cloud Functions (`functions/index.js`) with
+  `403 FORBIDDEN – Protected Super Admin Owner account.`; every attempt is written to
+  `/auditLogs`, which only the Owner can read and only the server can write.
+* Owner logins, logouts, failed sign-ins, password-reset requests, role verification,
+  session revocation and administrative actions made through the server are audited.
+  Firebase Authentication's own brute-force protection stays in force; there is no
+  bypass password, master key or hidden login.
+
+Set it up (once):
+
+1. Upgrade the Firebase project to the **Blaze** plan (required for Cloud Functions).
+2. Add repository secrets (GitHub → Settings → Secrets and variables → Actions):
+   `FIREBASE_SERVICE_ACCOUNT` (Firebase console → Project settings → Service accounts →
+   Generate new private key; paste the whole JSON), `FIREBASE_WEB_CONFIG` (the web app's
+   `firebaseConfig`), `SUPER_ADMIN_EMAIL` (the Owner's email) and, optionally,
+   `SUPER_ADMIN_PASSWORD`.
+3. Run **Actions → Deploy to Firebase** (rules, functions, website at
+   `https://<project-id>.web.app`), then **Actions → Set up Super Admin Owner**.
+4. Sign in with the Owner email; verify the address when asked. The header shows
+   *Owner Console*; Settings → *Owner Security* shows the audit log.
+
+Locally instead of GitHub Actions (never commit the key file):
+
+```bash
+cd functions && npm ci
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json GCLOUD_PROJECT=<project-id> \
+SUPER_ADMIN_EMAIL=<owner email> SUPER_ADMIN_PASSWORD='<secret>' node scripts/provision-owner.mjs
+npx firebase-tools deploy --only firestore:rules,functions --project <project-id>
+```
+
 ## Build and test
 
 ```bash
@@ -55,7 +100,9 @@ receive an email with a link to set their own password.
 ./gradlew :app:testDebugUnitTest        # JVM unit tests
 ./gradlew :app:lintDebug                # lint
 
-# Security rules + auth flows against the Firebase emulators (Node 20+ and Java 17+)
+# Security rules, auth flows and the Owner security tests against the Firebase emulators
+# (Auth + Firestore + Functions; Node 20+ and Java 17+)
+(cd functions && npm ci)
 cd tests/firestore-rules && npm install && npm test
 
 # Web portal: unit + Playwright browser tests (desktop and mobile) against the emulators

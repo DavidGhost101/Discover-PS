@@ -81,8 +81,8 @@ function stopData() {
   state.school = Object.fromEntries(data.COLLECTIONS.map((k) => [k, blank()]));
 }
 
-function startData(uid, role) {
-  const key = `${uid}:${role}`;
+function startData(uid, role, owner = false) {
+  const key = `${uid}:${role}:${owner}`;
   if (listenerKey === key) return;
   stopData();
   listenerKey = key;
@@ -92,18 +92,18 @@ function startData(uid, role) {
     PARENT: ['students', 'teachers', 'classes', 'subjects', 'assignments', 'notices', 'settings'],
     STUDENT: ['students', 'teachers', 'classes', 'subjects', 'assignments', 'notices', 'settings'],
     STAFF: ['teachers', 'notices', 'settings'],
-  }[role];
+  }[role].concat(owner ? ['auditLogs'] : []);
   needed.forEach((k) => { state.school[k] = blank(true); });
   stopListeners = data.startRoleListeners(services, uid, role, (k, remote) => {
     if (listenerKey !== key) return;
     state.school[k] = remote;
     render();
-  });
+  }, { owner });
 }
 
 function onSession(s) {
   if (s.kind === 'ready') {
-    const role = A.parseRole(s.user.role);
+    const role = A.portalRole(s.user.role);
     if (!role) {
       stopData();
       state.session = { kind: 'denied', reason: `Your account has no valid role ('${s.user.role}'). Contact the school administrator.` };
@@ -111,7 +111,7 @@ function onSession(s) {
       stopData();
       state.session = { kind: 'denied', reason: 'Your account is not active. New registrations must be approved by the school administrator before you can see school information. If your account was deactivated, please contact the school office.' };
     } else {
-      startData(s.user.uid, role);
+      startData(s.user.uid, role, A.isOwner(s.user));
       state.login = emptyLogin();
       state.session = { kind: 'portal', user: s.user, role };
     }
@@ -394,7 +394,7 @@ function portal(user, role) {
     STUDENT: ['Student Portal', 'STUDENT', 'blue'],
     STAFF: ['Support Staff Portal', 'STAFF', 'teal'],
   };
-  const [title, badge, tone] = titles[role];
+  const [title, badge, tone] = A.isOwner(user) ? ['Owner Console', 'OWNER', 'gold'] : titles[role];
   const tab = state.tab[role];
   const content = {
     ADMIN: adminView, TEACHER: teacherView, PARENT: parentView, STUDENT: studentView, STAFF: staffView,
@@ -432,7 +432,7 @@ function adminView(user, tab) {
     case 'subjects': return adminSubjects();
     case 'assignments': return adminAssignments();
     case 'notices': return adminNotices(user);
-    case 'settings': return adminSettings();
+    case 'settings': return adminSettings(user);
     default: return null;
   }
 }
@@ -476,7 +476,8 @@ function adminUsers(me) {
     remoteList(s.users, list, q || state.ui.userFilter !== 'ALL' ? 'No users match.' : 'No user accounts yet.', (u) => {
       const kids = u.role === 'PARENT' ? A.childrenOf(u.uid, s.students.items) : [];
       return el('button', { type: 'button', class: 'card card-button', 'data-testid': `user-row-${u.uid}`, onclick: () => editUserDialog(u, me) },
-        el('div', { class: 'card-head' }, text('h3', '', A.userLabel(u)), el('div', { class: 'row' }, pill(u.role, 'green'), pill(u.active ? 'ACTIVE' : 'INACTIVE', u.active ? 'teal' : 'amber'))),
+        el('div', { class: 'card-head' }, text('h3', '', A.userLabel(u)), el('div', { class: 'row' },
+          A.isOwner(u) ? pill('PROTECTED OWNER', 'gold') : pill(u.role, 'green'), pill(u.active ? 'ACTIVE' : 'INACTIVE', u.active ? 'teal' : 'amber'))),
         text('div', 'muted', [u.email, u.phoneNumber].filter(Boolean).join(' • ')),
         u.role === 'PARENT' ? text('div', 'purple small', kids.length ? `Children: ${kids.map(A.fullName).join(', ')}` : 'No linked children') : null);
     }));
@@ -497,6 +498,7 @@ function createAccountDialog() {
 
 function editUserDialog(u, me) {
   const isMe = u.uid === me.uid;
+  const protectedOwner = A.isOwner(u);
   const s = S();
   const kids = A.childrenOf(u.uid, s.students.items);
   const classes = byId(s.classes.items);
@@ -508,6 +510,7 @@ function editUserDialog(u, me) {
     title: `Manage ${A.userLabel(u)}`,
     body: [
       labeled('Email', u.email), labeled('Created', A.formatDateTime(u.createdAt)), name.node, phone.node,
+      protectedOwner ? text('p', 'notice-box err small', 'Protected Super Admin Owner account. Its role, status and deletion cannot be changed by any administrator; attempts are refused by the server and recorded in the audit log.', { 'data-testid': 'owner-protected-note' }) : null,
       isMe ? text('p', 'muted small', 'You cannot change your own role or deactivate yourself.') : [role.node, active.node],
       u.role === 'PARENT' ? el('div', {}, text('strong', 'small', 'Linked children'),
         kids.length ? el('ul', {}, kids.map((k) => el('li', {}, `${A.fullName(k)} — ${classes.get(k.classId)?.name ?? 'No class'}`)))
@@ -515,6 +518,10 @@ function editUserDialog(u, me) {
       u.email ? button('Email a password reset link', () => quiet(save(() => data.sendReset(services, u.email), `Password reset link sent to ${u.email}`)), { variant: 'ghost', testid: 'edit-user-reset' }) : null,
     ],
     onSubmit: () => save(() => {
+      if (protectedOwner && isMe) return data.updateOwnProfile(services, u.uid, name.get(), phone.get());
+      if (protectedOwner) {
+        return data.adminUpdateUser(services, { uid: u.uid, role: role.get(), active: active.get(), displayName: name.get(), phoneNumber: phone.get() });
+      }
       const next = { ...u, displayName: name.get(), phoneNumber: phone.get(), role: isMe ? u.role : role.get(), active: isMe ? u.active : active.get() };
       return data.updateUser(services, next);
     }, `User ${name.get().trim()} updated`),
@@ -766,7 +773,7 @@ function noticeDialog(existing, user, classes, audiences, allowWholeSchool) {
   });
 }
 
-function adminSettings() {
+function adminSettings(user) {
   const s = S();
   const cfg = s.settings.items[0] ?? { schoolName: 'Discovery Primary School' };
   const rows = [['School name', 'schoolName'], ['EMIS number (GDE)', 'emisNumber'], ['Education district', 'district'], ['Province', 'province'],
@@ -781,7 +788,24 @@ function adminSettings() {
       onSubmit: () => save(() => data.saveSettings(services, Object.fromEntries(fields.map(([k, f]) => [k, f.get().trim()]))), 'School settings updated'),
     });
   }, { testid: 'admin-edit-settings', small: true }),
-  s.settings.error ? errorBox(s.settings.error) : s.settings.loading ? loading() : card(rows.map(([label, key]) => labeled(label, cfg[key]))));
+  s.settings.error ? errorBox(s.settings.error) : s.settings.loading ? loading() : card(rows.map(([label, key]) => labeled(label, cfg[key]))),
+  A.isOwner(user) ? ownerSecurity() : null);
+}
+
+/** Owner only: session control and the security audit log (read-only; written by the server). */
+function ownerSecurity() {
+  const logs = S().auditLogs;
+  const describe = (e) => [e.action, e.outcome, e.actorEmail || e.actorUid].filter(Boolean).join(' • ');
+  return section('Owner Security', button('Sign out all devices', () => openForm({
+    title: 'Sign out all devices', submitLabel: 'Sign out everywhere', testid: 'owner-revoke-dialog',
+    body: text('p', '', 'This ends the Owner session on every phone, tablet and computer, including this one. You can sign in again with your password.'),
+    onSubmit: () => save(async () => { await data.revokeAllSessions(services); await signOut(); }, 'Signed out on every device.'),
+  }), { variant: 'danger', small: true, testid: 'owner-revoke-sessions' }),
+  text('p', 'muted small', 'Your password is managed only by Firebase Authentication. To change it, use "Change password" on your profile or "Forgot password" on the sign-in page.'),
+  remoteList(logs, logs.items, 'No security events recorded yet.', (e) => card(
+    el('div', { class: 'card-head' }, text('h3', '', e.type ?? 'EVENT'), text('span', 'muted small', A.formatDateTime(e.at))),
+    text('div', 'muted small', describe(e)),
+  )));
 }
 
 // ---------- TEACHER ----------

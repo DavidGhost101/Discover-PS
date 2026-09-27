@@ -274,3 +274,50 @@ test('forgot password sends a reset link that works', async ({ page }) => {
   await signIn(page, ADMIN.email, 'NewAdmin12345');
   await expect(id(page, 'portal-admin')).toBeVisible();
 });
+
+test('protected Super Admin Owner: owner console, 403 for other admins, audit log, sign out everywhere', async ({ page }) => {
+  const OWNER = { email: 'owner.fixture@example.org', password: 'OwnerFixture2024' };
+  const ownerUid = await E.provisionOwner(OWNER.email, OWNER.password);
+  await page.goto(APP);
+
+  // The Owner signs in through the normal sign-in form.
+  await signIn(page, OWNER.email, OWNER.password);
+  await expect(id(page, 'portal-admin')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Owner Console' })).toBeVisible();
+  await tab(page, 'settings');
+  await expect(page.getByRole('heading', { name: 'Owner Security' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'OWNER_LOGIN' }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'OWNER_ROLE_VERIFICATION' }).first()).toBeVisible();
+  await signOut(page);
+
+  // Another administrator cannot deactivate or demote the Owner.
+  await signIn(page, ADMIN.email, ADMIN.password);
+  await expect(id(page, 'portal-admin')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Admin Console' })).toBeVisible();
+  await tab(page, 'users');
+  const row = id(page, `user-row-${ownerUid}`);
+  await expect(row).toContainText('PROTECTED OWNER');
+  await row.click();
+  await expect(id(page, 'owner-protected-note')).toBeVisible();
+  await id(page, 'edit-user-active').uncheck();
+  await dialog(page).getByTestId('form-submit').click();
+  await expect(dialog(page).getByTestId('form-error')).toHaveText('403 FORBIDDEN — Protected Super Admin Owner account.');
+  await dialog(page).getByTestId('form-cancel').click();
+  // Bypassing the UI hits firestore.rules.
+  expect(await tryInPage(page, `(fs, db) => fs.updateDoc(fs.doc(db, 'users', '${ownerUid}'), { active: false })`)).toBe('permission-denied');
+  expect(await tryInPage(page, `(fs, db) => fs.getDocs(fs.collection(db, 'auditLogs'))`)).toBe('permission-denied');
+  await signOut(page);
+
+  // The Owner is still active, sees the blocked attempt, and can end every session.
+  await signIn(page, OWNER.email, OWNER.password);
+  await expect(page.getByRole('heading', { name: 'Owner Console' })).toBeVisible();
+  await tab(page, 'settings');
+  await expect(page.getByRole('heading', { name: 'PROTECTED_OWNER_ACTION_BLOCKED' }).first()).toBeVisible();
+  await expect(page.getByText(`UPDATE_USER • DENIED • ${ADMIN.email}`).first()).toBeVisible();
+  await id(page, 'owner-revoke-sessions').click();
+  await page.getByTestId('owner-revoke-dialog').getByTestId('form-submit').click();
+  await expect(id(page, 'login-email')).toBeVisible();
+
+  // The password never appears in the page or in Firestore.
+  expect(await page.content()).not.toContain(OWNER.password);
+});

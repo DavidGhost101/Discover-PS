@@ -421,6 +421,14 @@ class SchoolAuthViewModel(application: Application) : AndroidViewModel(applicati
 
     fun updateUser(user: User, onSuccess: () -> Unit = {}) {
         val me = currentUser() ?: return
+        if (user.isProtectedOwner) {
+            if (user.uid == me.uid) {
+                perform("Profile updated", onSuccess) { repository.updateOwnProfile(me.uid, user.displayName, user.phoneNumber) }
+            } else {
+                perform("User ${user.label} updated", onSuccess) { repository.adminUpdateUserOnServer(user) }
+            }
+            return
+        }
         if (user.uid == me.uid && (user.role != UserRole.ADMIN.name || !user.active)) {
             _formError.value = "You cannot remove your own administrator access. Ask another administrator."
             return

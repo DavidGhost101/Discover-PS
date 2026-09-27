@@ -29,7 +29,10 @@ jobs:
       - name: Install test dependencies
         working-directory: tests/firestore-rules
         run: npm install --no-audit --no-fund
-      - name: Run rules tests
+      - name: Install Cloud Functions dependencies
+        working-directory: functions
+        run: npm ci --no-audit --no-fund
+      - name: Run rules, auth-flow and owner-security tests
         working-directory: tests/firestore-rules
         run: npm test
 
@@ -49,6 +52,9 @@ jobs:
       - name: Install test dependencies
         working-directory: tests/web
         run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+      - name: Install Cloud Functions dependencies
+        working-directory: functions
+        run: npm ci --no-audit --no-fund
       - name: Unit tests
         working-directory: tests/web
         run: npm run test:unit

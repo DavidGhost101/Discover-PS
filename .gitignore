@@ -20,3 +20,7 @@ node_modules
 *-debug.log
 test-results/
 playwright-report/
+
+# Service-account keys and local secrets
+*service-account*.json
+functions/.env*

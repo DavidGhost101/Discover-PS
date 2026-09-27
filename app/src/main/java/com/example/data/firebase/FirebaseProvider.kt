@@ -6,6 +6,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.MemoryCacheSettings
 import com.google.firebase.firestore.PersistentCacheSettings
@@ -65,6 +66,7 @@ object FirebaseProvider {
             .build()
         FirebaseFirestore.getInstance().useEmulator(host, 8080)
         FirebaseAuth.getInstance().useEmulator(host, 9099)
+        FirebaseFunctions.getInstance().useEmulator(host, 5001)
         isConfigured = true
         initialized = true
     }

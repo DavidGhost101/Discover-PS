@@ -5,9 +5,12 @@ import com.example.data.model.Notice
 import com.example.data.model.SchoolClass
 import com.example.data.model.Student
 import com.example.data.model.Teacher
+import com.example.data.model.OWNER_ROLE
+import com.example.data.model.User
 import com.example.data.model.UserRole
 import com.google.firebase.Timestamp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -114,6 +117,15 @@ class SchoolAccessTest {
 }
 
 class FormValidationTest {
+
+    @Test
+    fun `owner role opens the admin portal but is never assignable`() {
+        assertEquals(UserRole.ADMIN, UserRole.fromString(OWNER_ROLE))
+        assertTrue(User(role = OWNER_ROLE).isProtectedOwner)
+        assertFalse(User(role = "ADMIN").isProtectedOwner)
+        assertFalse(FormValidation.assignableRoles.any { it.name == OWNER_ROLE })
+        assertEquals(null, UserRole.fromString("OWNER"))
+    }
 
     @Test
     fun `email validation`() {

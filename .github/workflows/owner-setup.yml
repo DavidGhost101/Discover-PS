@@ -1,0 +1,48 @@
+name: Set up Super Admin Owner
+
+# Manual, one-off: creates/updates the protected Owner account in the school's Firebase
+# project with the Admin SDK and grants the SUPER_ADMIN_OWNER custom claim.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   FIREBASE_SERVICE_ACCOUNT  JSON key of a service account with "Firebase Authentication Admin"
+#                             and "Cloud Datastore User" roles (Firebase console → Project
+#                             settings → Service accounts → Generate new private key).
+#   SUPER_ADMIN_EMAIL         the Owner's email address.
+#   SUPER_ADMIN_PASSWORD      optional. If omitted, set the password with "Forgot password".
+# Secrets are masked in logs; the script never prints or stores the password.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision-owner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Admin SDK
+        working-directory: functions
+        run: npm ci --no-audit --no-fund
+      - name: Provision the Owner account
+        working-directory: functions
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          SUPER_ADMIN_EMAIL: ${{ secrets.SUPER_ADMIN_EMAIL }}
+          SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ] || [ -z "$SUPER_ADMIN_EMAIL" ]; then
+            echo "::error::Add the FIREBASE_SERVICE_ACCOUNT and SUPER_ADMIN_EMAIL repository secrets first."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/service-account.json"
+          umask 077
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$key"
+          export GOOGLE_APPLICATION_CREDENTIALS="$key"
+          export GCLOUD_PROJECT="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).project_id)" "$key")"
+          node scripts/provision-owner.mjs
+          rm -f "$key"

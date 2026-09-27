@@ -111,8 +111,8 @@ fun AdminDashboardScreen(
 
     Column(modifier = modifier.fillMaxSize().background(Color(0xFFF8F9FA))) {
         PortalHeader(
-            title = "Admin Console",
-            badge = "ADMIN",
+            title = if (user.isProtectedOwner) "Owner Console" else "Admin Console",
+            badge = if (user.isProtectedOwner) "OWNER" else "ADMIN",
             badgeColor = DiscoveryGold,
             subtitle = user.label,
             icon = Icons.Default.AdminPanelSettings,
@@ -319,7 +319,7 @@ private fun AdminUsersTab(state: SchoolState, me: User, viewModel: SchoolAuthVie
                         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(u.label, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                                Pill(u.role, DiscoveryGreen)
+                                if (u.isProtectedOwner) Pill("PROTECTED OWNER", DiscoveryGold) else Pill(u.role, DiscoveryGreen)
                                 Pill(if (u.active) "ACTIVE" else "INACTIVE", if (u.active) Color(0xFF059669) else Color(0xFFB45309))
                             }
                             Text(listOf(u.email, u.phoneNumber).filter { it.isNotBlank() }.joinToString(" • "), fontSize = 11.sp, color = SchoolSlate)
@@ -398,6 +398,13 @@ private fun EditUserDialog(user: User, me: User, state: SchoolState, viewModel: 
         LabeledValue("Created", formatDateTime(user.createdAt))
         FormField(name, { name = it }, "Display name", "edit_user_name_input")
         FormField(phone, { phone = it }, "Phone", "edit_user_phone_input", phoneError)
+        if (user.isProtectedOwner) {
+            Text(
+                "Protected Super Admin Owner account. Its role, status and deletion cannot be changed by any " +
+                    "administrator; attempts are refused by the server and recorded in the audit log.",
+                fontSize = 11.sp, color = Color(0xFFB91C1C), modifier = Modifier.testTag("owner_protected_note")
+            )
+        }
         if (isMe) {
             Text("You cannot change your own role or deactivate yourself.", fontSize = 11.sp, color = SchoolSlate)
         } else {

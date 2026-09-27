@@ -1,0 +1,16 @@
+{
+  "name": "discovery-primary-functions",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "provision-owner": "node scripts/provision-owner.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.0.0"
+  }
+}

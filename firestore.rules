@@ -11,6 +11,11 @@ rules_version = '2';
 //  * Students only reach the student record whose userId is their uid.
 //  * Deactivated or pending accounts (active == false) can read nothing but their
 //    own /users document.
+//  * The Super Admin Owner is identified by BOTH its /users role SUPER_ADMIN_OWNER and the
+//    Auth custom claims {role: SUPER_ADMIN_OWNER, owner: true}. Only the Admin SDK
+//    (functions/scripts/provision-owner.mjs) can set either, so no client can make itself
+//    Owner, and no client (other admins included) can edit, demote, deactivate or delete
+//    the Owner's profile. /auditLogs is written only by Cloud Functions.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -36,7 +41,13 @@ service cloud.firestore {
       return isActive() && me().role == r;
     }
 
-    function isAdmin()   { return hasRole('ADMIN'); }
+    function isOwner() {
+      return hasRole('SUPER_ADMIN_OWNER')
+        && request.auth.token.get('role', '') == 'SUPER_ADMIN_OWNER'
+        && request.auth.token.get('owner', false) == true;
+    }
+
+    function isAdmin()   { return hasRole('ADMIN') || isOwner(); }
     function isTeacher() { return hasRole('TEACHER'); }
     function isParent()  { return hasRole('PARENT'); }
     function isStudent() { return hasRole('STUDENT'); }
@@ -87,7 +98,12 @@ service cloud.firestore {
       allow create: if (isAdmin() && validUser(uid, request.resource.data) && inMySchool(request.resource.data))
         || (signedIn() && request.auth.uid == uid && validSelfRegistration(uid, request.resource.data));
 
-      allow update: if (isAdmin() && validUser(uid, request.resource.data) && inMySchool(request.resource.data))
+      // validUser() never accepts SUPER_ADMIN_OWNER, so nobody can grant the Owner role, and
+      // the Owner's own profile is off limits to every other administrator.
+      allow update: if (isAdmin()
+          && resource.data.role != 'SUPER_ADMIN_OWNER'
+          && validUser(uid, request.resource.data)
+          && inMySchool(request.resource.data))
         || (
           signedIn()
           && request.auth.uid == uid
@@ -98,7 +114,14 @@ service cloud.firestore {
           && request.resource.data.displayName.size() <= 100
         );
 
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() && resource.data.role != 'SUPER_ADMIN_OWNER';
+    }
+
+    // ---------- owner audit log (written only by Cloud Functions / Admin SDK) ----------
+
+    match /auditLogs/{entryId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
     // ---------- school structure (admin managed, readable by active members) ----------

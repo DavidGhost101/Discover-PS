@@ -5,9 +5,10 @@ import {
   sendEmailVerification, sendPasswordResetEmail, signOut as fbSignOut, RecaptchaVerifier, signInWithPhoneNumber,
 } from 'firebase/auth';
 import {
-  collection, doc, query, where, onSnapshot, setDoc, updateDoc, deleteDoc, getDoc, writeBatch,
+  collection, doc, query, where, orderBy, limit, onSnapshot, setDoc, updateDoc, deleteDoc, getDoc, writeBatch,
   arrayUnion, arrayRemove, Timestamp,
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { provisioningAuth } from './firebase.js';
 import { SCHOOL_ID, AUDIENCE_ALL, parseRole, validate, diff, fullName } from './access.js';
 
@@ -15,6 +16,14 @@ import { SCHOOL_ID, AUDIENCE_ALL, parseRole, validate, diff, fullName } from './
 
 export function friendlyError(e) {
   const code = e?.code ?? '';
+  if (code.startsWith('functions/')) {
+    const message = (e.message ?? '').replace(/\s*\[\d{3}\]$/, '');
+    if (code === 'functions/permission-denied') return `403 FORBIDDEN — ${message || 'Access denied.'}`;
+    if (['functions/not-found', 'functions/unavailable', 'functions/internal'].includes(code)) {
+      return "The school's server functions are not reachable. An administrator must deploy Cloud Functions (see README).";
+    }
+    return message || 'Something went wrong. Please try again.';
+  }
   const map = {
     'auth/invalid-credential': 'Incorrect email or password.',
     'auth/wrong-password': 'Incorrect email or password.',
@@ -75,12 +84,34 @@ export function watchSession({ auth, db }, onChange) {
   };
 }
 
+// ---------- server functions & security events ----------
+
+export function callFunction({ functions }, name, payload = {}) {
+  return httpsCallable(functions, name)(payload).then((r) => r.data);
+}
+
+/**
+ * Owner security events (login, logout, failed sign-in, reset request). The server writes
+ * the audit entry only for the Owner account and never receives a password. Best effort:
+ * sign-in keeps working when Cloud Functions are not deployed.
+ */
+function securityEvent(services, type, email, waitMs = 0) {
+  const call = callFunction(services, 'recordSecurityEvent', email ? { type, email } : { type }).catch(() => {});
+  return waitMs ? Promise.race([call, new Promise((r) => setTimeout(r, waitMs))]) : call;
+}
+
 // ---------- auth actions ----------
 
-export async function signIn({ auth }, email, password) {
+export async function signIn(services, email, password) {
   check(validate.email(email));
   if (!password) fail('Password is required.');
-  await signInWithEmailAndPassword(auth, email.trim(), password);
+  try {
+    await signInWithEmailAndPassword(services.auth, email.trim(), password);
+  } catch (e) {
+    if (['auth/invalid-credential', 'auth/wrong-password', 'auth/too-many-requests'].includes(e?.code)) securityEvent(services, 'AUTH_FAILURE', email.trim());
+    throw e;
+  }
+  securityEvent(services, 'LOGIN');
 }
 
 /** Self-registration: always an inactive PARENT awaiting administrator approval. */
@@ -102,9 +133,10 @@ export async function registerParent({ auth, db }, name, email, password) {
   await sendEmailVerification(cred.user);
 }
 
-export async function sendReset({ auth }, email) {
+export async function sendReset(services, email) {
   check(validate.email(email));
-  await sendPasswordResetEmail(auth, email.trim());
+  await sendPasswordResetEmail(services.auth, email.trim());
+  securityEvent(services, 'PASSWORD_RESET_REQUESTED', email.trim());
 }
 
 export async function resendVerification({ auth }) {
@@ -118,8 +150,22 @@ export async function refreshVerification({ auth }) {
   return auth.currentUser.emailVerified;
 }
 
-export async function signOut({ auth }) {
-  await fbSignOut(auth);
+export async function signOut(services) {
+  if (services.auth.currentUser) await securityEvent(services, 'LOGOUT', '', 3000);
+  await fbSignOut(services.auth);
+}
+
+/** Revokes every refresh token of this account, ending its sessions on all devices. */
+export async function revokeAllSessions(services) {
+  await callFunction(services, 'revokeMySessions');
+}
+
+/**
+ * Administrator changes to the protected Owner go through the server, which refuses them
+ * (403) and records the attempt in the audit log.
+ */
+export async function adminUpdateUser(services, { uid, role, active, displayName, phoneNumber }) {
+  await callFunction(services, 'adminUpdateUser', { uid, role, active, displayName, phoneNumber });
 }
 
 let recaptcha = null;
@@ -213,13 +259,13 @@ function mergeNotices(onData) {
   });
 }
 
-export const COLLECTIONS = ['users', 'teachers', 'teacherProfile', 'students', 'classes', 'subjects', 'assignments', 'notices', 'settings'];
+export const COLLECTIONS = ['users', 'teachers', 'teacherProfile', 'students', 'classes', 'subjects', 'assignments', 'notices', 'settings', 'auditLogs'];
 
 /**
  * Starts the listeners a role may use. update(key, remote) receives {items, loading, error}.
  * Returns a function that removes every listener (called on sign-out / role change).
  */
-export function startRoleListeners({ db }, uid, role, update) {
+export function startRoleListeners({ db }, uid, role, update, { owner = false } = {}) {
   const unsubs = [];
   const on = (key, fn) => unsubs.push(fn((r) => update(key, r)));
   on('settings', (cb) => listenDoc(doc(db, 'settings', 'school_info'), cb));
@@ -229,6 +275,7 @@ export function startRoleListeners({ db }, uid, role, update) {
     for (const name of ['users', 'teachers', 'students', 'classes', 'subjects', 'assignments', 'notices']) {
       on(name, (cb) => listen(inSchool(db, name), cb));
     }
+    if (owner) on('auditLogs', (cb) => listen(query(collection(db, 'auditLogs'), orderBy('at', 'desc'), limit(50)), cb));
   } else if (role === 'TEACHER') {
     let studentsUnsub = () => {};
     let lastKey = null;

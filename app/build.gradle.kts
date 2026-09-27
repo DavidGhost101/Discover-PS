@@ -111,6 +111,7 @@ dependencies {
   implementation(libs.firebase.ai)
   // Firestore enabled:
   implementation(libs.firebase.firestore)
+  implementation(libs.firebase.functions)
 
   // Firebase Auth and Credential Manager enabled:
   implementation(libs.firebase.auth)

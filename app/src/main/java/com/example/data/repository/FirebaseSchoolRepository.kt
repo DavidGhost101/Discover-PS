@@ -20,6 +20,7 @@ import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -153,6 +154,22 @@ class FirebaseSchoolRepository {
         FormValidation.required(user.displayName, "Name")?.let { throw IllegalArgumentException(it) }
         FormValidation.phone(user.phoneNumber)?.let { throw IllegalArgumentException(it) }
         col(COLLECTION_USERS).document(user.uid).set(user.copy(schoolId = SCHOOL_ID, updatedAt = Timestamp.now())).await()
+    }
+
+    /**
+     * Administrator change to another account through the server (Cloud Function). Used for
+     * the protected Owner: the server refuses it with 403 and records the attempt.
+     */
+    suspend fun adminUpdateUserOnServer(user: User): Result<Unit> = write {
+        FirebaseFunctions.getInstance().getHttpsCallable("adminUpdateUser").call(
+            mapOf(
+                "uid" to user.uid,
+                "role" to user.role,
+                "active" to user.active,
+                "displayName" to user.displayName.trim(),
+                "phoneNumber" to user.phoneNumber.trim()
+            )
+        ).await()
     }
 
     /** Self-service profile edit: rules only allow these three fields to change. */

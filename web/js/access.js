@@ -8,9 +8,22 @@ export const ADMIN_AUDIENCES = ['ALL', 'PARENT', 'TEACHER', 'STUDENT', 'STAFF'];
 export const TEACHER_AUDIENCES = ['PARENT', 'STUDENT'];
 export const MIN_PASSWORD_LENGTH = 8;
 
+/** Protected Super Admin Owner: granted only server-side (Admin SDK custom claim + profile). */
+export const OWNER_ROLE = 'SUPER_ADMIN_OWNER';
+
+/** Roles an administrator may assign (never the Owner role). */
 export function parseRole(role) {
   const r = typeof role === 'string' ? role.trim().toUpperCase() : '';
   return ROLES.includes(r) ? r : null;
+}
+
+export function isOwner(user) {
+  return !!user && user.role === OWNER_ROLE;
+}
+
+/** Which portal a profile opens: the Owner uses the administrator console. */
+export function portalRole(role) {
+  return role === OWNER_ROLE ? 'ADMIN' : parseRole(role);
 }
 
 /** Milliseconds for a Firestore Timestamp, Date or millis number; null when absent. */

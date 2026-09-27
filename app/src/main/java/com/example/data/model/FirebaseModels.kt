@@ -5,6 +5,13 @@ import com.google.firebase.firestore.Exclude
 import com.google.firebase.firestore.IgnoreExtraProperties
 
 /**
+ * Profile role of the protected Super Admin Owner. It is granted only server-side (Admin SDK
+ * custom claim + /users profile, see functions/scripts/provision-owner.mjs); it is never an
+ * assignable role, and the Owner uses the administrator portal.
+ */
+const val OWNER_ROLE = "SUPER_ADMIN_OWNER"
+
+/**
  * Supported User Roles in the Discovery Primary LMS.
  */
 enum class UserRole {
@@ -17,7 +24,7 @@ enum class UserRole {
     companion object {
         fun fromString(role: String?): UserRole? {
             return when (role?.trim()?.uppercase()) {
-                "ADMIN" -> ADMIN
+                "ADMIN", OWNER_ROLE -> ADMIN
                 "TEACHER" -> TEACHER
                 "STUDENT" -> STUDENT
                 "PARENT" -> PARENT
@@ -54,6 +61,11 @@ data class User(
     @get:Exclude
     val userRole: UserRole?
         get() = UserRole.fromString(role)
+
+    /** The protected Owner account: no administrator may change its role or status. */
+    @get:Exclude
+    val isProtectedOwner: Boolean
+        get() = role == OWNER_ROLE
 
     @get:Exclude
     val label: String

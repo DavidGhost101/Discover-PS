@@ -7,6 +7,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, connectAuthEmulator } from 'firebase/auth';
 import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 
 const STORAGE_KEY = 'discover-ps.firebase-config';
 const PROVISIONING_APP = 'account-provisioning';
@@ -79,11 +80,13 @@ export function initFirebase() {
   const app = getApps().length ? getApp() : initializeApp(config);
   const auth = getAuth(app);
   const db = getFirestore(app);
+  const functions = getFunctions(app);
   if (emulatorHost) {
     connectAuthEmulator(auth, `http://${emulatorHost}:9099`, { disableWarnings: true });
     connectFirestoreEmulator(db, emulatorHost, 8080);
+    connectFunctionsEmulator(functions, emulatorHost, 5001);
   }
-  services = { app, auth, db, source };
+  services = { app, auth, db, functions, source };
   return services;
 }
 

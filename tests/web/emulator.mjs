@@ -49,3 +49,21 @@ export async function completePasswordReset(email, newPassword) {
 export async function completeEmailVerification(email) {
   await call('POST', `${AUTH}/identitytoolkit.googleapis.com/v1/accounts:update?key=${KEY}`, { oobCode: await latestCode(email, 'VERIFY_EMAIL') });
 }
+
+/** Runs the real Owner provisioning script (Admin SDK) against the emulators. */
+export async function provisionOwner(email, password) {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const cwd = new URL('../../functions/', import.meta.url).pathname;
+  const { stdout } = await promisify(execFile)(process.execPath, ['scripts/provision-owner.mjs'], {
+    cwd,
+    env: {
+      ...process.env, GCLOUD_PROJECT: PROJECT, SUPER_ADMIN_EMAIL: email, SUPER_ADMIN_PASSWORD: password,
+      FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099', FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080',
+    },
+  });
+  if (stdout.includes(password)) throw new Error('provisioning printed the password');
+  const { users } = await call('POST', `${AUTH}/identitytoolkit.googleapis.com/v1/projects/${PROJECT}/accounts:lookup`, { email: [email] }, true);
+  await call('POST', `${AUTH}/identitytoolkit.googleapis.com/v1/projects/${PROJECT}/accounts:update`, { localId: users[0].localId, emailVerified: true }, true);
+  return users[0].localId;
+}
